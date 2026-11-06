@@ -1,0 +1,30 @@
+agent: pipeline-fixer
+description: A refactor removed `import math` from stats.py.
+test: ["python -m pytest -q"]
+context:
+  failed_jobs:
+    - id: 2
+      name: unit-tests
+      stage: test
+      failure_reason: script_failure
+      trace: |
+        $ python -m pytest -q
+        F                                                                        [100%]
+        =================================== FAILURES ===================================
+        ___________________________________ test_rms ___________________________________
+        >       assert rms([3, 4, 0, 0]) == 2.5
+        stats.py:2: in rms
+            return math.sqrt(sum(v * v for v in values) / len(values))
+        E   NameError: name 'math' is not defined
+        FAILED test_stats.py::test_rms - NameError: name 'math' is not defined
+        ERROR: Job failed: exit code 1
+  ci_config:
+    gitlab_ci_yml: "unit-tests:\n  script: python -m pytest -q\n"
+    merged_yaml: ""
+  pipeline_diff:
+    base: 0000000
+    commits: ["5d6e7f8 Clean up imports"]
+    diff: "--- stats.py\n+++ stats.py\n@@ -1,4 +1,2 @@\n-import math\n-\n def rms(values):\n"
+expect:
+  classification: code
+  tests_pass: true

@@ -1,0 +1,25 @@
+# Example sandbox image: a project toolchain (here Python 3.12 + pytest) plus the agent layer.
+# Make one of these per toolchain you need (node, java, go...). Requirements: glibc, bash, git.
+# Bake the project's build/test dependencies in here: the sandbox has no internet at run time.
+ARG AGENT_LAYER=agent-platform/agent-layer:latest
+ARG TOOLCHAIN_BASE=python:3.12-slim-bookworm
+FROM ${AGENT_LAYER} AS agent
+
+FROM ${TOOLCHAIN_BASE}
+RUN apt-get update && apt-get install -y --no-install-recommends git bash ca-certificates make \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir pytest PyYAML
+
+COPY --from=agent /opt/agent /opt/agent
+ENV PATH=/opt/agent/bin:$PATH \
+    AGENT_HOME=/opt/agent \
+    TIKTOKEN_CACHE_DIR=/opt/agent/tiktoken \
+    LITELLM_LOCAL_MODEL_COST_MAP=True \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    AIDER_ANALYTICS=false \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN useradd --create-home --uid 10001 agent
+USER 10001
+WORKDIR /home/agent

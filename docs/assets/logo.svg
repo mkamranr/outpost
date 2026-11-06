@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Outpost</title>
+  <desc id="desc">A hexagonal outpost wall with a gap (the air gap) around three agent nodes linked to a central hub.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e1b4b"/>
+      <stop offset="1" stop-color="#4338ca"/>
+    </linearGradient>
+    <radialGradient id="hub" cx="0.4" cy="0.35" r="0.75">
+      <stop offset="0" stop-color="#fdba74"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <!-- outpost wall, open on the right: the air gap -->
+  <path d="M195.5 110 V89 L128 50 L60.5 89 V167 L128 206 L195.5 167 V146"
+        fill="none" stroke="#e0e7ff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- agents connected to the orchestrator hub -->
+  <g stroke="#a5b4fc" stroke-width="7" stroke-linecap="round">
+    <line x1="128" y1="132" x2="128" y2="94"/>
+    <line x1="128" y1="132" x2="95" y2="152"/>
+    <line x1="128" y1="132" x2="161" y2="152"/>
+  </g>
+  <g fill="#e0e7ff">
+    <circle cx="128" cy="92" r="11"/>
+    <circle cx="93" cy="153" r="11"/>
+    <circle cx="163" cy="153" r="11"/>
+  </g>
+  <circle cx="128" cy="132" r="16" fill="url(#hub)"/>
+  <circle cx="128" cy="132" r="25" fill="none" stroke="#fb923c" stroke-width="3" opacity="0.45"/>
+</svg>

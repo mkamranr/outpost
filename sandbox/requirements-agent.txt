@@ -1,0 +1,12 @@
+# Coding engines installed into the self-contained /opt/agent venv.
+# Ranges are resolved on the internet build host; the exact resolved set is written to
+# bundle/manifests/agent-layer.lock by build/build-all.sh. Re-pin here once a set is validated by eval/.
+aider-chat>=0.86,<1
+mini-swe-agent>=1.0,<2
+tiktoken
+# Used by eval/run.py, which renders the orchestrator prompt templates inside the sandbox image
+# (the agent catalog imports the orchestrator's GitLab tool definitions, hence httpx).
+Jinja2
+PyYAML
+pydantic>=2
+httpx

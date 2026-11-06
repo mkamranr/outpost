@@ -1,0 +1,31 @@
+agent: chat
+description: A developer asks in an MR thread why the pipeline failed; the answer must come from the job log.
+instruction: why is the pipeline on this MR red?
+context:
+  subject:
+    kind: merge_request
+    iid: 21
+    title: Add statistics helpers
+    source_branch: feature/stats
+    target_branch: main
+    head_pipeline: {id: 310, status: failed}
+    description: Adds mean() and median().
+  discussion:
+    notes: ["@alice: @agent why is the pipeline on this MR red?"]
+    position: null
+catalog:
+  - {name: code-reviewer, kind: agent (read-only), description: Reviews a merge request diff.}
+  - {name: fix-and-review, kind: flow, description: Fixes the failed pipeline of a merge request, then reviews the fix.}
+tool_responses:
+  list_pipelines: '[{"id": 310, "status": "failed", "ref": "feature/stats"}]'
+  get_pipeline_jobs: '[{"id": 901, "name": "unit-tests", "stage": "test", "status": "failed", "failure_reason": "script_failure"}]'
+  get_job_log: |
+    $ python -m pytest -q
+    FF
+    FAILED test_stats.py::test_mean - assert 1.0 == 2
+    FAILED test_stats.py::test_median_even - assert 3 == 2.5
+    2 failed in 0.03s
+  get_merge_request: '{"iid": 21, "head_pipeline": {"id": 310, "status": "failed"}}'
+expect:
+  body_contains: [test_mean]
+  tools_used: [get_job_log]

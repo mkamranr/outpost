@@ -1,0 +1,10 @@
+name: fix-and-review
+description: Fixes the failed pipeline of a merge request, then reviews the proposed fix.
+triggers:
+  - event: note
+    commands: [fix-and-review]
+    targets: [merge_request]
+steps:
+  - agent: pipeline-fixer
+  - agent: code-reviewer
+    target: produced_mr

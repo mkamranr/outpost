@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+/bundle/
+/dist/
+deploy/.env
+deploy/config/projects.yaml
+deploy/secrets/*
+!deploy/secrets/README.md
+eval/out/

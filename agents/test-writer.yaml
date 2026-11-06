@@ -1,0 +1,17 @@
+name: test-writer
+description: Adds or extends automated tests for the code changed in a merge request and verifies they pass.
+phase: 4
+mode: edit
+engine: aider
+output: mr_commit
+max_attempts: 3
+timeout_minutes: 40
+context_budget_tokens: 28000
+context: [mr, mr_diff]
+tools: [get_merge_request, get_mr_diff, list_pipelines, get_pipeline_jobs, get_job_log]
+prompts:
+  main: test-writer.md.j2
+triggers:
+  - event: note
+    commands: [tests, test]
+    targets: [merge_request]

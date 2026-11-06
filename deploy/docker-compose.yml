@@ -1,0 +1,57 @@
+# Orchestrator stack for the air-gapped host. Images come from the internal registry (see build/load-and-push.sh).
+#   cp .env.example .env && edit; put secrets in ./secrets; cp config/projects.yaml.example config/projects.yaml
+#   docker compose up -d
+name: agent-platform
+
+x-orchestrator: &orchestrator
+  image: ${REGISTRY}/agent-platform/orchestrator:${VERSION}
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL_FILE: /run/secrets/database_url
+    WEBHOOK_SECRET_FILE: /run/secrets/webhook_secret
+    TICKET_SECRET_FILE: /run/secrets/ticket_secret
+    ADMIN_TOKEN_FILE: /run/secrets/admin_token
+    # Only if vLLM requires a key (chat runs in orchestrator-worker):
+    # LLM_API_KEY_FILE: /run/secrets/llm_api_key
+  volumes:
+    - ./config:/app/config:ro
+    - ./secrets:/run/secrets:ro
+    # Uncomment to customise agents/prompts without rebuilding the image:
+    # - ../agents:/app/agents:ro
+    # Internal CA bundle for GitLab TLS (set TLS_CA_FILE=/certs/ca.crt in .env):
+    # - /etc/pki/ca-trust/source/anchors:/certs:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: ${REGISTRY}/library/postgres:${POSTGRES_TAG}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_DB: agent
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./secrets/postgres_password:/run/secrets/postgres_password:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  orchestrator-api:
+    <<: *orchestrator
+    ports:
+      - "${LISTEN_ADDR:-0.0.0.0}:${LISTEN_PORT:-8080}:8080"
+
+  orchestrator-worker:
+    <<: *orchestrator
+    command: ["python", "-m", "app.worker"]
+    healthcheck:
+      disable: true
+
+volumes:
+  pgdata:

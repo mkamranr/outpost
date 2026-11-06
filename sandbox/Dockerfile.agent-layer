@@ -1,0 +1,34 @@
+# Self-contained agent toolchain at /opt/agent: standalone CPython + venv with Aider, mini-SWE-agent and agent-runner.
+# It does not depend on the base image's Python, so it can be copied onto ANY glibc-based toolchain image:
+#     COPY --from=agent-platform/agent-layer:<ver> /opt/agent /opt/agent
+# Build context: sandbox/.   docker build -f Dockerfile.agent-layer -t agent-platform/agent-layer:$VERSION .
+ARG BUILD_BASE=debian:bookworm-slim
+FROM ${BUILD_BASE} AS build
+ARG PBS_URL
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+RUN test -n "$PBS_URL" && mkdir -p /opt/agent && curl -fsSL "$PBS_URL" | tar -xz -C /opt/agent \
+    && /opt/agent/python/bin/python3 -m venv /opt/agent/venv
+
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY requirements-agent.txt /tmp/requirements-agent.txt
+RUN /opt/agent/venv/bin/pip install -r /tmp/requirements-agent.txt
+COPY pyproject.toml /src/pyproject.toml
+COPY agent_runner /src/agent_runner
+RUN /opt/agent/venv/bin/pip install /src && /opt/agent/venv/bin/pip freeze > /opt/agent/requirements.lock
+
+# Air-gap preparation: tiktoken downloads its encodings on first use, so fetch them now.
+RUN TIKTOKEN_CACHE_DIR=/opt/agent/tiktoken /opt/agent/venv/bin/python -c \
+    "import tiktoken; [tiktoken.get_encoding(e) for e in ('cl100k_base', 'o200k_base', 'p50k_base')]"
+
+COPY aider /opt/agent/aider
+RUN mkdir -p /opt/agent/bin \
+    && ln -s /opt/agent/venv/bin/agent-runner /opt/agent/bin/agent-runner \
+    && ln -s /opt/agent/venv/bin/aider /opt/agent/bin/aider \
+    && ln -s /opt/agent/venv/bin/python /opt/agent/bin/agent-python
+# Fail the build now if Aider cannot start without network access to its model-price map.
+RUN LITELLM_LOCAL_MODEL_COST_MAP=True HF_HUB_OFFLINE=1 TIKTOKEN_CACHE_DIR=/opt/agent/tiktoken \
+    /opt/agent/venv/bin/aider --version
+
+FROM scratch
+COPY --from=build /opt/agent /opt/agent

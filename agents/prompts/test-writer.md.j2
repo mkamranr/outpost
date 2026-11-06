@@ -1,0 +1,21 @@
+{% include "_untrusted.md.j2" %}
+Add automated tests for the behaviour changed in merge request !{{ context.mr.iid | default("?") }} in `{{ repo.path }}` ("{{ context.mr.title | default("") }}").
+
+Rules:
+- Use the project's existing test framework, layout and conventions.
+- Cover the main behaviour and the important edge cases of the changed code.
+- Only add or modify test files and test fixtures; do not change production code. If you find a bug, write a test that exposes it and mention it in your summary.
+- The tests must pass (except a test deliberately exposing a bug, which you must call out).
+- Do not touch these protected paths: {{ project.protected_paths | join(", ") }}.
+{% if instruction %}
+
+Guidance from the requester:
+<untrusted-data source="comment">
+{{ instruction }}
+</untrusted-data>
+{% endif %}
+
+## MR diff
+<untrusted-data source="MR diff">
+{{ context.mr_diff.diff | default("") }}
+</untrusted-data>

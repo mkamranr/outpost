@@ -1,0 +1,8 @@
+{
+  "object_kind": "issue",
+  "user": {"id": 7, "username": "alice"},
+  "project": {"id": 42, "path_with_namespace": "group/app"},
+  "object_attributes": {"iid": 11, "action": "update"},
+  "labels": [{"title": "agent::plan"}, {"title": "backend"}],
+  "changes": {"labels": {"previous": [{"title": "backend"}], "current": [{"title": "backend"}, {"title": "agent::plan"}]}}
+}

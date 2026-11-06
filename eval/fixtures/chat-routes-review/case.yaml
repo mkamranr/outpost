@@ -1,0 +1,22 @@
+agent: chat
+description: A developer asks for a review in chat; the chat agent should hand off to code-reviewer, not review itself.
+instruction: can you do a proper code review of this MR?
+context:
+  subject:
+    kind: merge_request
+    iid: 21
+    title: Add statistics helpers
+    source_branch: feature/stats
+    target_branch: main
+    description: Adds mean() and median().
+  discussion:
+    notes: ["@alice: @agent can you do a proper code review of this MR?"]
+    position: null
+catalog:
+  - {name: code-reviewer, kind: agent (read-only), description: Reviews a merge request diff and leaves inline comments.}
+  - {name: mr-assist, kind: agent (changes code), description: Applies a change requested in an MR thread.}
+  - {name: test-writer, kind: agent (changes code), description: Adds tests for the code changed in a merge request.}
+tool_responses:
+  get_merge_request: '{"iid": 21, "title": "Add statistics helpers"}'
+expect:
+  handoff: code-reviewer

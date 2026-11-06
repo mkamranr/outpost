@@ -1,0 +1,44 @@
+{% include "_untrusted.md.j2" %}
+The GitLab CI pipeline for this repository (`{{ repo.path }}`, ref `{{ repo.ref }}`, commit `{{ repo.sha[:8] }}`) failed.
+Your job is to make the smallest correct change that fixes the failure.
+
+Rules:
+- Fix the root cause. Do not delete, skip or weaken tests, and do not add `allow_failure`, `|| true` or retries to hide the failure.
+- Only change a test's expectations when the test itself is clearly wrong given the intent of the recent diff.
+- Keep the change minimal and in the existing code style. Do not refactor unrelated code.
+- If you change `.gitlab-ci.yml`, keep it valid YAML and valid GitLab CI syntax.
+- Do not touch these protected paths: {{ project.protected_paths | join(", ") }}.
+- You cannot access the internet. Do not add new external dependencies unless the failure is precisely a missing dependency that the project already expects.
+
+## Failed jobs
+{% for job in context.failed_jobs if job is mapping %}
+### {{ job.name }} (stage `{{ job.stage }}`)
+<untrusted-data source="job trace">
+{{ job.trace }}
+</untrusted-data>
+{% endfor %}
+
+## CI configuration (.gitlab-ci.yml)
+<untrusted-data source=".gitlab-ci.yml">
+{{ context.ci_config.gitlab_ci_yml | default("(not available)") }}
+</untrusted-data>
+{% if context.ci_config.merged_yaml | default("") %}
+Merged configuration with includes resolved:
+<untrusted-data source="merged CI config">
+{{ context.ci_config.merged_yaml }}
+</untrusted-data>
+{% endif %}
+
+## Changes since the last green pipeline
+<untrusted-data source="diff">
+{{ context.pipeline_diff.commits | default([]) | join("\n") }}
+
+{{ context.pipeline_diff.diff | default("") }}
+</untrusted-data>
+{% if instruction %}
+
+## Extra instruction from the requesting developer
+<untrusted-data source="comment">
+{{ instruction }}
+</untrusted-data>
+{% endif %}

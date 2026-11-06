@@ -1,0 +1,21 @@
+# CI definition for the dedicated sandbox project (e.g. agent-platform/sandbox).
+# Pipelines are started only by the orchestrator, through the API, with the AGENT_* variables set.
+# Project CI/CD variables to define (masked where possible):
+#   AGENT_LLM_BASE_URL  e.g. http://vllm.internal:8000/v1
+#   AGENT_LLM_MODEL     the served model name, e.g. qwen3.8-27b
+#   AGENT_LLM_API_KEY   if vLLM was started with --api-key
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "api" && $AGENT_TASK_ID
+    - when: never
+
+agent:
+  image: $AGENT_SANDBOX_IMAGE
+  tags: [agent-sandbox]
+  timeout: 2h          # hard ceiling; each agent enforces its own, shorter, deadline
+  interruptible: true
+  variables:
+    GIT_STRATEGY: none # the runner clones the TARGET project itself, with CI_JOB_TOKEN (read-only)
+  script:
+    - if [ -n "${CI_SERVER_TLS_CA_FILE:-}" ]; then export GIT_SSL_CAINFO="$CI_SERVER_TLS_CA_FILE"; fi
+    - agent-runner

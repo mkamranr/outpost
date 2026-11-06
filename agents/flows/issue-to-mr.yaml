@@ -1,0 +1,15 @@
+name: issue-to-mr
+description: Plans an issue, waits for a human to approve the plan, implements it as a draft MR, then reviews that MR.
+triggers:
+  - event: note
+    commands: [build]
+    targets: [issue]
+  - event: label
+    label: agent::flow::issue-to-mr
+    targets: [issue]
+steps:
+  - agent: planner
+  - gate: approval          # "@agent approve <corrections>" or the agent::approved label
+  - agent: code-writer      # the corrections from the approval reach it as its instruction
+  - agent: [code-reviewer, security-analyst]
+    target: produced_mr     # the draft MR the code-writer opened
