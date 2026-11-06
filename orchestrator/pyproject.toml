@@ -1,0 +1,30 @@
+[project]
+name = "agent-orchestrator"
+version = "0.1.0"
+description = "Self-built GitLab agent platform orchestrator (air-gapped)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi==0.115.12",
+    "uvicorn==0.34.2",
+    "httpx==0.28.1",
+    "pydantic==2.11.4",
+    "PyYAML==6.0.2",
+    "SQLAlchemy==2.0.40",
+    "psycopg[binary]==3.2.9",
+    "Jinja2==3.1.6",
+    # Tool loop and LLM client shared with the sandbox (sandbox/), used by inline agents such as chat.
+    "agent-runner==0.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.5"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

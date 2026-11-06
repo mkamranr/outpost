@@ -1,0 +1,8 @@
+stages: [test]
+
+unit-tests:
+  stage: test
+  script:
+  - python -m pytest -q
+   artifacts:
+    when: always

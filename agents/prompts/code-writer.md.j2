@@ -1,0 +1,35 @@
+{% include "_untrusted.md.j2" %}
+Implement the following issue in the repository `{{ repo.path }}` (branch `{{ repo.ref }}`).
+
+Rules:
+- Follow the approved plan when one is given. If the plan is impossible as written, make the closest reasonable change and explain the deviation.
+- Write or update tests for the behaviour you add.
+- Keep the change focused; match the existing code style; do not refactor unrelated code.
+- Do not touch these protected paths: {{ project.protected_paths | join(", ") }}.
+- You cannot access the internet; do not add new external dependencies.
+
+## Issue #{{ context.issue.iid | default("?") }}: {{ context.issue.title | default("") }}
+<untrusted-data source="issue description">
+{{ context.issue.description | default("") }}
+</untrusted-data>
+{% if context.issue_notes.plan | default(none) %}
+
+## Approved plan
+<untrusted-data source="approved plan">
+{{ context.issue_notes.plan }}
+</untrusted-data>
+{% endif %}
+{% if context.issue_notes.discussion | default("") %}
+
+## Discussion
+<untrusted-data source="issue discussion">
+{{ context.issue_notes.discussion }}
+</untrusted-data>
+{% endif %}
+{% if instruction %}
+
+## Corrections from the approver
+<untrusted-data source="comment">
+{{ instruction }}
+</untrusted-data>
+{% endif %}

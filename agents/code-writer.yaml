@@ -1,0 +1,20 @@
+name: code-writer
+description: Implements an approved issue plan in the sandbox, runs the tests, and opens a draft MR linked to the issue.
+phase: 2
+mode: edit
+engine: aider
+output: merge_request
+max_attempts: 3
+timeout_minutes: 45
+context_budget_tokens: 30000
+context: [issue, issue_notes]
+tools: [get_issue, list_issue_notes, search_merge_requests, get_merge_request]
+prompts:
+  main: code-writer.md.j2
+triggers:
+  - event: label
+    label: agent::implement
+    targets: [issue]
+  - event: note
+    commands: [approve, implement]
+    targets: [issue]

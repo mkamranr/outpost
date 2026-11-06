@@ -1,0 +1,22 @@
+name: pipeline-fixer
+description: Diagnoses a failed pipeline. Retries flaky jobs, or fixes code/CI config in the sandbox and opens an MR once local tests pass.
+phase: 1
+mode: edit
+engine: aider
+output: pipeline_fix
+classify: true
+allow_ci_changes: true
+max_attempts: 3
+timeout_minutes: 30
+context_budget_tokens: 30000
+context: [failed_jobs, ci_config, pipeline_diff]
+tools: [list_pipelines, get_pipeline_jobs, get_job_log, lint_ci, get_merge_request]
+prompts:
+  classify: pipeline-fixer.classify.md.j2
+  main: pipeline-fixer.fix.md.j2
+triggers:
+  - event: pipeline
+    status: failed
+  - event: note
+    commands: [fix-pipeline]
+    targets: [merge_request, commit]

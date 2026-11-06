@@ -1,0 +1,30 @@
+{
+  "task_id": "airgap-edit",
+  "agent": {
+    "name": "pipeline-fixer",
+    "mode": "edit",
+    "engine": "aider",
+    "output": "pipeline_fix",
+    "classify": true,
+    "max_attempts": 1,
+    "timeout_minutes": 8
+  },
+  "prompts": {
+    "classify": "AIRGAP-CLASSIFY: classify this failure",
+    "main": "Fix the off-by-one error in calc.py"
+  },
+  "project": {
+    "setup": [],
+    "test": [
+      "python -m pytest -q"
+    ],
+    "protected_paths": []
+  },
+  "repo": {
+    "path": "airgap/check",
+    "http_url": "",
+    "ref": "main",
+    "sha": "__SHA__"
+  },
+  "context": {}
+}

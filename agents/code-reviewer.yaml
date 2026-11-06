@@ -1,0 +1,23 @@
+name: code-reviewer
+description: Reviews a merge request diff and leaves inline comments on correctness, security and maintainability issues.
+phase: 3
+mode: readonly
+engine: llm
+output: review
+max_attempts: 1
+timeout_minutes: 20
+context_budget_tokens: 32000
+context: [mr, mr_diff]
+tools: [get_issue, get_merge_request, list_mr_discussions, list_pipelines, get_pipeline_jobs, get_job_log]
+prompts:
+  main: code-reviewer.md.j2
+triggers:
+  - event: note
+    commands: [review]
+    targets: [merge_request]
+  - event: label
+    label: agent::review
+    targets: [merge_request]
+  - event: merge_request
+    actions: [open, reopen, update]
+    require_label: agent::review

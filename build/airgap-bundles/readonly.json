@@ -1,0 +1,26 @@
+{
+  "task_id": "airgap-ro",
+  "agent": {
+    "name": "planner",
+    "mode": "readonly",
+    "engine": "llm",
+    "output": "note",
+    "max_attempts": 1,
+    "timeout_minutes": 5
+  },
+  "prompts": {
+    "main": "Write a plan for adding a multiply function."
+  },
+  "project": {
+    "setup": [],
+    "test": [],
+    "protected_paths": []
+  },
+  "repo": {
+    "path": "airgap/check",
+    "http_url": "",
+    "ref": "main",
+    "sha": "__SHA__"
+  },
+  "context": {}
+}

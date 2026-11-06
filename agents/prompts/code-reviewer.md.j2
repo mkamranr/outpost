@@ -1,0 +1,26 @@
+{% include "_untrusted.md.j2" %}
+You are reviewing merge request !{{ context.mr.iid | default("?") }} in `{{ repo.path }}`:
+"{{ context.mr.title | default("") }}" (`{{ context.mr.source_branch | default("") }}` → `{{ context.mr.target_branch | default("") }}`).
+
+Use your tools to read surrounding code when the diff alone is not enough. Focus on, in order:
+1. Correctness bugs: logic errors, unhandled errors, edge cases, race conditions, broken contracts.
+2. Security: injection, missing authorisation, secrets in code, unsafe deserialisation or file handling.
+3. Missing or inadequate tests for the changed behaviour.
+4. Maintainability problems that will clearly cause bugs later.
+
+Do not comment on formatting, naming taste, or anything a linter would catch. Prefer a few high-confidence
+comments over many speculative ones (at most 15). Each comment must point at a line that exists in the new
+version of the file and appears in the diff, and should say what is wrong and how to fix it.
+
+## Description
+<untrusted-data source="MR description">
+{{ context.mr.description | default("") }}
+</untrusted-data>
+
+## Diff
+<untrusted-data source="MR diff">
+{{ context.mr_diff.diff | default("") }}
+</untrusted-data>
+
+When done, call `submit` with:
+{"summary": "<overall assessment in markdown, 3-8 sentences>", "comments": [{"path": "<new path>", "line": <new line number>, "body": "<comment markdown>"}]}

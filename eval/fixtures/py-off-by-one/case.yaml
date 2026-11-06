@@ -1,0 +1,33 @@
+agent: pipeline-fixer
+description: A recent commit introduced an off-by-one in add(); unit tests fail.
+test: ["python -m pytest -q"]
+context:
+  failed_jobs:
+    - id: 1
+      name: unit-tests
+      stage: test
+      failure_reason: script_failure
+      trace: |
+        $ python -m pytest -q
+        F.                                                                       [100%]
+        =================================== FAILURES ===================================
+        ___________________________________ test_add ___________________________________
+            def test_add():
+        >       assert add(1, 2) == 3
+        E       assert 4 == 3
+        E        +  where 4 = add(1, 2)
+        test_calc.py:5: AssertionError
+        =========================== short test summary info ============================
+        FAILED test_calc.py::test_add - assert 4 == 3
+        1 failed, 1 passed in 0.02s
+        ERROR: Job failed: exit code 1
+  ci_config:
+    gitlab_ci_yml: "unit-tests:\n  image: python:3.12\n  script: python -m pytest -q\n"
+    merged_yaml: ""
+  pipeline_diff:
+    base: 0000000
+    commits: ["1a2b3c4 Tweak add()"]
+    diff: "--- calc.py\n+++ calc.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a + b\n+    return a + b + 1\n"
+expect:
+  classification: code
+  tests_pass: true

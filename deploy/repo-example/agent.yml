@@ -1,0 +1,10 @@
+# Optional per-repository file: .gitlab/agent.yml (protected from agent edits by default).
+# It can only NARROW what the platform admin enabled in projects.yaml.
+sandbox_image: registry.internal/agent-platform/sandbox-python:0.1.0   # must match allowed_image_prefixes
+setup:
+  - pip install --no-index --find-links /opt/wheels -e .
+test:
+  - pytest -q -x
+protected_paths:
+  - migrations/
+agents: [pipeline-fixer, code-reviewer, mr-assist]   # opt out of the others

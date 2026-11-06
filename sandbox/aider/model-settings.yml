@@ -1,0 +1,11 @@
+# Aider settings for the Qwen model served by vLLM. The name must match "openai/<AGENT_LLM_MODEL>".
+# Adjust the name below if your served model name differs, or set AGENT_AIDER_EDIT_FORMAT at run time.
+- name: openai/qwen3.8-27b
+  edit_format: diff            # use "whole" if the model mangles SEARCH/REPLACE blocks on your repos
+  weak_model_name: openai/qwen3.8-27b
+  use_repo_map: true
+  examples_as_sys_msg: true
+  use_temperature: 0.2
+  reminder: sys
+  extra_params:
+    max_tokens: 8192

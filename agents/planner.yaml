@@ -1,0 +1,22 @@
+name: planner
+description: Reads an issue and posts an implementation plan for a human to approve before any code is written.
+phase: 2
+mode: readonly
+engine: llm
+output: note
+max_attempts: 1
+timeout_minutes: 20
+context_budget_tokens: 24000
+context: [issue, issue_notes]
+tools: [get_issue, list_issue_notes, search_issues, search_merge_requests, get_merge_request]
+prompts:
+  main: planner.md.j2
+note_marker: "<!-- agent:plan -->"
+note_suffix: "Reply `{mention} approve` (optionally with corrections) to have the `code-writer` agent implement this plan, or add the `agent::implement` label."
+triggers:
+  - event: label
+    label: agent::plan
+    targets: [issue]
+  - event: note
+    commands: [plan]
+    targets: [issue]

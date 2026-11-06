@@ -1,0 +1,17 @@
+name: mr-assist
+description: Applies a change requested in an MR thread (for example "@agent fix this"), tests it, and commits it or opens a follow-up MR.
+phase: 3
+mode: edit
+engine: aider
+output: mr_commit
+max_attempts: 3
+timeout_minutes: 30
+context_budget_tokens: 28000
+context: [mr, discussion, mr_diff]
+tools: [get_merge_request, get_mr_diff, list_mr_discussions, get_pipeline_jobs, get_job_log]
+prompts:
+  main: mr-assist.md.j2
+triggers:
+  - event: note
+    commands: [fix, change, do]
+    targets: [merge_request]

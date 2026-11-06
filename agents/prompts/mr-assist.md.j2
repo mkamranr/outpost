@@ -1,0 +1,25 @@
+{% include "_untrusted.md.j2" %}
+A reviewer on merge request !{{ context.mr.iid | default("?") }} in `{{ repo.path }}` ("{{ context.mr.title | default("") }}") asked for a change.
+Make exactly the requested change on the current branch `{{ repo.ref }}`, keep it minimal, and keep the tests passing.
+Do not touch these protected paths: {{ project.protected_paths | join(", ") }}.
+
+## Request
+<untrusted-data source="reviewer comment">
+{{ instruction or "(see the thread below)" }}
+</untrusted-data>
+{% if context.discussion.position | default(none) %}
+
+The request is attached to `{{ context.discussion.position.path }}` line {{ context.discussion.position.new_line or context.discussion.position.old_line }}.
+{% endif %}
+{% if context.discussion.notes | default([]) %}
+
+## Thread
+<untrusted-data source="MR thread">
+{{ context.discussion.notes | join("\n\n") }}
+</untrusted-data>
+{% endif %}
+
+## MR diff for orientation
+<untrusted-data source="MR diff">
+{{ context.mr_diff.diff | default("") }}
+</untrusted-data>

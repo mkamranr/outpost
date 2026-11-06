@@ -1,0 +1,25 @@
+agent: pipeline-fixer
+description: The runner could not reach the package mirror; nothing is wrong with the code.
+test: ["python -m pytest -q"]
+context:
+  failed_jobs:
+    - id: 4
+      name: unit-tests
+      stage: test
+      failure_reason: script_failure
+      trace: |
+        $ pip install -r requirements.txt
+        WARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError('<pip._vendor.urllib3.connection.HTTPSConnection object>: Failed to establish a new connection: [Errno 110] Connection timed out')': /simple/pytest/
+        ERROR: Could not find a version that satisfies the requirement pytest (from versions: none)
+        ERROR: No matching distribution found for pytest
+        ERROR: Job failed: exit code 1
+  ci_config:
+    gitlab_ci_yml: "unit-tests:\n  script:\n    - pip install -r requirements.txt\n    - python -m pytest -q\n"
+    merged_yaml: ""
+  pipeline_diff:
+    base: 0000000
+    commits: ["2b3c4d5 Update README"]
+    diff: "--- README.md\n+++ README.md\n+More docs.\n"
+expect:
+  classification: flaky
+  changes: false

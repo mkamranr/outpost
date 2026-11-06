@@ -1,0 +1,17 @@
+name: security-analyst
+description: Audits a merge request diff for security weaknesses (injection, authz, secrets, unsafe deserialisation) and posts a triage report.
+phase: 4
+mode: readonly
+engine: llm
+output: note
+max_attempts: 1
+timeout_minutes: 20
+context_budget_tokens: 32000
+context: [mr, mr_diff]
+tools: [get_merge_request, list_mr_discussions, search_issues]
+prompts:
+  main: security-analyst.md.j2
+triggers:
+  - event: note
+    commands: [security]
+    targets: [merge_request]

@@ -1,0 +1,19 @@
+name: chat
+description: Answers questions about this project in the comment thread, using read-only GitLab tools, and hands work to the right specialist agent or flow.
+phase: 5
+mode: readonly
+engine: inline          # runs inside the orchestrator: replies in seconds, never executes code
+output: chat
+max_attempts: 1
+timeout_minutes: 4
+context_budget_tokens: 16000
+context: [subject, discussion]
+tools: [get_issue, list_issue_notes, search_issues, get_merge_request, get_mr_diff, list_mr_discussions,
+        search_merge_requests, list_pipelines, get_pipeline_jobs, get_job_log, lint_ci, get_file, list_tree, search_code]
+prompts:
+  main: chat.md.j2
+triggers:
+  # Also answers any "@agent <text>" that is not a known command, when enabled for the project.
+  - event: note
+    commands: [chat, ask]
+    targets: [issue, merge_request]

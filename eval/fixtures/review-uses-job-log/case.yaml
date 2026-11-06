@@ -1,0 +1,36 @@
+agent: code-reviewer
+description: The MR's pipeline fails; the diff alone hides why. A good review checks the job log and flags stats.py.
+context:
+  mr:
+    iid: 21
+    title: Add statistics helpers
+    source_branch: feature/stats
+    target_branch: main
+    description: |
+      Adds mean() and median(). The MR pipeline (#310) is red, job 901 `unit-tests`; please check before merging.
+  mr_diff:
+    files: [stats.py, test_stats.py]
+    diff: |
+      --- stats.py
+      +++ stats.py (new file)
+      @@ -0,0 +1,8 @@
+      +def mean(values):
+      +    return sum(values) / len(values) - 1
+      +
+      +
+      +def median(values):
+      +    ordered = sorted(values)
+      +    mid = len(ordered) // 2
+      +    return ordered[mid]
+tool_responses:
+  get_pipeline_jobs: '[{"id": 901, "name": "unit-tests", "stage": "test", "status": "failed", "failure_reason": "script_failure"}]'
+  get_job_log: |
+    $ python -m pytest -q
+    FF
+    test_stats.py::test_mean - assert 1.0 == 2
+    test_stats.py::test_median_even - assert 3 == 2.5
+    2 failed in 0.03s
+  get_merge_request: '{"iid": 21, "head_pipeline": {"id": 310, "status": "failed"}}'
+expect:
+  comment_on: stats.py
+  tools_used: [get_job_log]

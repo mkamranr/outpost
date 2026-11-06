@@ -1,0 +1,24 @@
+agent: pipeline-fixer
+description: A mis-indented `artifacts:` key makes .gitlab-ci.yml invalid YAML.
+test:
+  - python -c "import yaml; c = yaml.safe_load(open('.gitlab-ci.yml')); assert c['unit-tests']['artifacts']['when'] == 'always'"
+  - python -m pytest -q
+context:
+  failed_jobs:
+    - id: 3
+      name: yaml-invalid
+      stage: .pre
+      failure_reason: config_error
+      trace: |
+        This GitLab CI configuration is invalid: (<unknown>): did not find expected '-' indicator
+        while parsing a block collection at line 6 column 3
+  ci_config:
+    gitlab_ci_yml: "stages: [test]\n\nunit-tests:\n  stage: test\n  script:\n  - python -m pytest -q\n   artifacts:\n    when: always\n"
+    merged_yaml: ""
+  pipeline_diff:
+    base: 0000000
+    commits: ["9a8b7c6 Keep test artifacts"]
+    diff: "--- .gitlab-ci.yml\n+++ .gitlab-ci.yml\n+   artifacts:\n+    when: always\n"
+expect:
+  classification: ci_config
+  tests_pass: true

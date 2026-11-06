@@ -1,0 +1,44 @@
+# Which projects the platform serves, and how. Keys under `projects` are full project paths.
+# A project not listed here is ignored even if its webhook is configured.
+
+# Sandbox images must come from these registries (a repo's .gitlab/agent.yml cannot point elsewhere).
+allowed_image_prefixes:
+  - registry.internal/agent-platform/
+
+defaults:
+  token_ref: gitlab_bot_token                 # file in ./secrets
+  sandbox_image: registry.internal/agent-platform/sandbox-python:0.1.0
+  setup: []                                   # commands run once after clone (offline!), e.g. ["pip install -e . --no-index"]
+  test: []                                    # commands that must pass before the agent proposes a change
+  protected_paths: [".gitlab/agent.yml"]      # globs; a trailing "/" protects a directory (.gitlab/agents/ is always added)
+  agents: [pipeline-fixer]                    # add `chat` for free-text questions; flows appear when all their agents are listed
+  custom_agents:                              # repository-defined agents in .gitlab/agents/*.yaml (default branch only)
+    enabled: false
+    allow_edit: false                         # read-only (comment) agents unless set
+    engines: [llm]
+  allow_push_to_mr_branch: false              # false: mr-assist/test-writer open a follow-up MR on human branches
+  pipeline_fixer:
+    branches: ["*"]                           # globs of refs whose failed pipelines are handled
+    skip_stale: true                          # ignore failures on SHAs that are no longer the branch head
+
+projects:
+  platform/payments-api:
+    test: ["pytest -q"]
+    # All agents: enables chat and every flow (issue-to-mr, fix-and-review, mr-deep-review).
+    agents: [chat, pipeline-fixer, planner, code-writer, code-reviewer, mr-assist, security-analyst, test-writer]
+    protected_paths: [".gitlab/agent.yml", "deploy/", "migrations/"]
+    custom_agents:
+      enabled: true                           # the team may add read-only agents in .gitlab/agents/
+
+  platform/web-frontend:
+    sandbox_image: registry.internal/agent-platform/sandbox-node:0.1.0
+    setup: ["npm ci --offline"]
+    test: ["npm test -- --watchAll=false"]
+    agents: [pipeline-fixer, code-reviewer]
+    pipeline_fixer:
+      branches: ["main", "release/*"]
+
+  # Work attributed to a named engineer instead of the service account:
+  platform/legacy-batch:
+    token_ref: alice_pat
+    test: ["make test"]

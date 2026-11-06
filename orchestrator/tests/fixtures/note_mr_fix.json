@@ -1,0 +1,11 @@
+{
+  "object_kind": "note",
+  "user": {"id": 7, "username": "alice"},
+  "project": {"id": 42, "path_with_namespace": "group/app"},
+  "object_attributes": {
+    "id": 3001, "note": "Looks off by one.\n\n@agent fix this please use <= here",
+    "noteable_type": "MergeRequest", "discussion_id": "disc123",
+    "position": {"new_path": "src/calc.py", "new_line": 12, "old_path": "src/calc.py", "old_line": null}
+  },
+  "merge_request": {"iid": 5, "source_branch": "feature/x", "last_commit": {"id": "bbbbbbbb22222222"}}
+}

@@ -1,0 +1,4 @@
+# Scripts and configs run on Linux hosts: always check out with LF line endings.
+* text=auto eol=lf
+*.png binary
+*.tar.gz binary

@@ -1,0 +1,28 @@
+# Example repository-defined agent: commit as .gitlab/agents/changelog.yaml on the default branch.
+# Needs `custom_agents: {enabled: true}` for the project in projects.yaml. Invoke with `@agent changelog` on an MR;
+# it appears in `@agent help` as `custom/changelog`.
+name: changelog
+description: Drafts a changelog entry for a merge request in Keep a Changelog style.
+mode: readonly
+output: note
+context: [mr, mr_diff]
+tools: [get_merge_request, search_merge_requests]
+timeout_minutes: 10
+prompt: |
+  You maintain CHANGELOG.md for `{{ repo.path }}`. Draft the entry for merge request !{{ context.mr.iid }}
+  "{{ context.mr.title }}". Read CHANGELOG.md with your tools to match its existing style.
+
+  <untrusted-data source="MR description">
+  {{ context.mr.description }}
+  </untrusted-data>
+
+  <untrusted-data source="MR diff">
+  {{ context.mr_diff.diff }}
+  </untrusted-data>
+
+  Group changes under Added / Changed / Fixed / Removed, one line each, written for users of the project rather
+  than its developers. Leave out internal refactors. Call `submit` with {"body": "<the entry as markdown>"}.
+triggers:
+  - event: note
+    commands: [changelog]
+    targets: [merge_request]

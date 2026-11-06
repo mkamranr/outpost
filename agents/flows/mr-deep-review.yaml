@@ -1,0 +1,13 @@
+name: mr-deep-review
+description: Reviews a merge request for correctness and security in parallel, then adds missing tests.
+triggers:
+  - event: note
+    commands: [deep-review]
+    targets: [merge_request]
+  - event: label
+    label: agent::flow::deep-review
+    targets: [merge_request]
+steps:
+  - agent: [code-reviewer, security-analyst]
+  - agent: test-writer
+    when: always            # add tests even if a reviewer could not finish
