@@ -224,3 +224,91 @@ def test_edit_agent_investigates_before_editing(tmp_path):
     assert result["status"] == "success"
     first_instruction, first_files = engine.instructions[0]
     assert "add() adds an extra 1" in first_instruction and first_files[0] == "src/calc.py"
+
+
+# -- conflict resolution (merge target) ----------------------------------------------------
+
+def _commit(repo, message):
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message], cwd=repo, check=True)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+
+
+def conflicting_repo(tmp_path):
+    """main and feature both rewrote add(); feature also added sub(). Checked out at feature's head."""
+    repo, base = make_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-qb", "main"], cwd=repo, check=True)
+    (repo / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    target = _commit(repo, "main: fix add")
+    subprocess.run(["git", "checkout", "-q", "-b", "feature", base], cwd=repo, check=True)
+    (repo / "src" / "calc.py").write_text("def add(a, b):\n    return (a + b) + 1  # feature\n\n\ndef sub(a, b):\n"
+                                          "    return a - b\n")
+    source = _commit(repo, "feature: add sub")
+    return repo, source, target
+
+
+def merge_bundle(source, target, **project):
+    b = bundle(source, name="conflict-resolver", output="conflict_resolution", classify=False, max_attempts=2)
+    b["repo"]["merge_target"] = {"ref": "main", "sha": target}
+    b["prompts"] = {"main": "resolve the conflicts"}
+    b["project"].update(project)
+    return b
+
+
+class Resolver:
+    def __init__(self, resolve=True):
+        self.resolve, self.calls = resolve, []
+
+    def run(self, repo, instruction, files, attempt, timeout):
+        self.calls.append((instruction, files))
+        text = (repo / "src" / "calc.py").read_text()
+        assert "<<<<<<<" in text or attempt > 1
+        if self.resolve:
+            (repo / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n"
+                                                  "    return a - b\n")
+        return EngineRun(ok=True)
+
+
+def test_merge_conflicts_are_resolved_against_the_target(tmp_path):
+    repo, source, target = conflicting_repo(tmp_path)
+    (tmp_path / "work").mkdir()
+    engine = Resolver()
+    llm = ScriptedLLM([])
+    result = Runner(merge_bundle(source, target), repo, tmp_path / "work", llm.config, time.time() + 600,
+                    llm=llm, engine=engine).run()
+    assert result["status"] == "success" and result["tests_passed"] is True
+    assert result["conflicts"] == ["src/calc.py"]
+    assert engine.calls[0][1] == ["src/calc.py"] and "## Files with conflicts\n- src/calc.py" in engine.calls[0][0]
+    changes = {c["path"]: c for c in result["changes"]}
+    assert set(changes) == {"src/calc.py"}  # relative to the target, not to the MR head
+    content = base64.b64decode(changes["src/calc.py"]["content_b64"]).decode().replace("\r\n", "\n")
+    assert "def sub" in content and "<<<<<<<" not in content and "+ 1" not in content
+    assert llm.requests == []  # no extra model calls besides the engine
+
+
+def test_leftover_conflict_markers_fail_the_run(tmp_path):
+    repo, source, target = conflicting_repo(tmp_path)
+    (tmp_path / "work").mkdir()
+    engine = Resolver(resolve=False)
+    result = Runner(merge_bundle(source, target), repo, tmp_path / "work", LLMConfig("http://x", "m"),
+                    time.time() + 600, llm=ScriptedLLM([]), engine=engine).run()
+    assert result["status"] == "failed"
+    assert [a["note"] for a in result["attempts"]] == ["conflict markers left in src/calc.py"] * 2
+    assert "still contain conflict markers" in engine.calls[1][0]
+    assert "Conflict markers are still left in: `src/calc.py`" in result["summary"]
+
+
+def test_merge_refused_when_the_mr_touches_protected_paths(tmp_path):
+    repo, source, target = conflicting_repo(tmp_path)
+    (tmp_path / "work").mkdir()
+    engine = Resolver()
+    result = Runner(merge_bundle(source, target, protected_paths=["src/"]), repo, tmp_path / "work",
+                    LLMConfig("http://x", "m"), time.time() + 600, llm=ScriptedLLM([]), engine=engine).run()
+    assert result["status"] == "failed" and "protected paths" in result["summary"] and "`src/calc.py`" in result["summary"]
+    assert engine.calls == []
+
+
+def test_conflict_markers_detection(tmp_path):
+    (tmp_path / "a.txt").write_text("x\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n")
+    (tmp_path / "b.rst").write_text("Title\n=======\n")  # a heading, not a conflict
+    assert git_repo.conflict_markers(tmp_path, ["a.txt", "b.rst", "missing.txt"]) == ["a.txt"]

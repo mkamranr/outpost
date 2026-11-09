@@ -16,6 +16,7 @@ from .remote import RemoteTools
 log = logging.getLogger("agent_runner")
 
 TAIL_CHARS = 5000
+MAX_MERGE_FILES = 50  # the orchestrator commits at most this many files
 _PATHISH = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9]{1,8})(?::\d+)?")
 
 
@@ -140,7 +141,71 @@ class Runner:
             self.result.update(body=answer["body"])
         return self.result
 
+    def run_merge(self, merge: dict[str, str]) -> dict[str, Any]:
+        """Merge the target branch in, have the engine resolve the conflicts, test, and return the tree vs the target."""
+        base = merge["sha"]
+        conflicted = git_repo.start_merge(self.repo, base)
+        touched = git_repo.changed_paths(self.repo, base)
+        self.result.update(conflicts=conflicted)
+        protected = self.project.get("protected_paths") or []
+        blocked = [p for p in touched if git_repo._protected(p, protected)]
+        if len(touched) > MAX_MERGE_FILES or blocked:
+            why = (f"the merge request changes {len(touched)} files compared with `{merge['ref']}` (at most "
+                   f"{MAX_MERGE_FILES} can be committed)" if not blocked else
+                   "it changes protected paths, which a replacement MR could not carry: "
+                   + ", ".join(f"`{p}`" for p in blocked[:10]))
+            self.result.update(status="failed", summary=f"I can't open a replacement MR: {why}. Resolve the "
+                                                        "conflicts by hand or with GitLab's conflict editor.")
+            return self.result
+
+        engine = self._engine or get_engine(self.agent["engine"], self.llm_config, self.workdir)
+        task = self.prompts["main"] + "\n\n## Files with conflicts\n" + "\n".join(f"- {p}" for p in conflicted)
+        instruction: str | None = task if conflicted else None
+        files = conflicted or touched[:20]
+        passed: bool | None = False
+        left: list[str] = list(conflicted)
+        for n in range(1, int(self.agent.get("max_attempts", 3)) + 1):
+            if self.remaining() < 120:
+                self.result["attempts"].append({"n": n, "tests_passed": None, "note": "out of time"})
+                break
+            if instruction is not None:
+                run = engine.run(self.repo, instruction, files, n, timeout=self.remaining() - 90)
+                left = git_repo.conflict_markers(self.repo, conflicted)
+                if left:
+                    self.result["attempts"].append({"n": n, "tests_passed": None, "test_output_tail": _tail(run.log_tail, 1500),
+                                                    "note": "conflict markers left in " + ", ".join(left)})
+                    instruction = ("These files still contain conflict markers (`<<<<<<<` / `>>>>>>>` lines): "
+                                   + ", ".join(left) + ". Resolve those conflicts now.\n\n" + task)
+                    continue
+            passed, output = self.run_tests()
+            self.result["attempts"].append({"n": n, "tests_passed": passed, "test_output_tail": output,
+                                            "note": "tests passed" if passed else ("no tests configured" if passed is None else "tests failed")})
+            if passed is not False:
+                break
+            instruction = (
+                "The conflicts are resolved but the project's tests fail. Here is the end of the test output:\n\n"
+                f"```\n{_tail(output, 4000)}\n```\n\nFix the merged code. Do not weaken or delete tests."
+            )
+
+        changes, dropped = git_repo.collect_changes(self.repo, base, protected)
+        self.result.update(changes=changes, diff=git_repo.diff_text(self.repo, base), tests_passed=passed)
+        summary = (f"Merged `{merge['ref']}` ({base[:8]}) into the merge request and resolved conflicts in "
+                   f"{len(conflicted)} file(s)." if conflicted else
+                   f"Merged `{merge['ref']}` ({base[:8]}) into the merge request; git reported no conflicts here.")
+        if dropped:
+            summary += "\n\n_Changes to protected paths were discarded: " + ", ".join(f"`{p}`" for p in dropped) + "_"
+        if passed is None:
+            summary += "\n\n_No test command is configured for this project; rely on the MR pipeline._"
+        ok = not left and passed is not False and bool(changes)
+        if left:
+            summary += "\n\nConflict markers are still left in: " + ", ".join(f"`{p}`" for p in left)
+        self.result.update(status="success" if ok else "failed", summary=summary)
+        return self.result
+
     def run_edit(self) -> dict[str, Any]:
+        merge = self.bundle["repo"].get("merge_target")
+        if merge:
+            return self.run_merge(merge)
         base = self.bundle["repo"]["sha"]
         hints: list[str] = []
         if self.agent.get("classify"):
