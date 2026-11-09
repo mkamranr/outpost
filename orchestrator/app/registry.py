@@ -17,7 +17,7 @@ Noteable = Literal["issue", "merge_request", "commit"]
 class Trigger(BaseModel):
     model_config = ConfigDict(extra="forbid")  # a typo in an agent file should fail loudly, not be ignored
 
-    event: Literal["pipeline", "note", "label", "merge_request"]
+    event: Literal["pipeline", "note", "label", "merge_request", "issue"]
     # pipeline
     status: str | None = None
     # note: "@agent <command>"
@@ -25,9 +25,12 @@ class Trigger(BaseModel):
     targets: list[Noteable] = Field(default_factory=lambda: ["issue", "merge_request"])
     # label: fires when this label is added
     label: str | None = None
-    # merge_request: actions such as open/update/reopen, optionally gated by a label already on the MR
+    # merge_request / issue: actions such as open/update/reopen, optionally gated by a label already on the object
     actions: list[str] = Field(default_factory=list)
     require_label: str | None = None
+    # merge_request / issue: run for authors without Developer access (e.g. Reporters opening issues).
+    # Built-in read-only agents only; pair it with the agent's max_per_hour.
+    allow_any_author: bool = False
 
     @model_validator(mode="after")
     def _check(self) -> "Trigger":
@@ -35,6 +38,10 @@ class Trigger(BaseModel):
             raise ValueError("note triggers need at least one command")
         if self.event == "label" and not self.label:
             raise ValueError("label triggers need a label")
+        if self.event in ("merge_request", "issue") and not self.actions:
+            raise ValueError(f"{self.event} triggers need at least one action")
+        if self.allow_any_author and self.event not in ("merge_request", "issue"):
+            raise ValueError("allow_any_author is only for merge_request and issue triggers")
         return self
 
 
@@ -47,7 +54,8 @@ class AgentDef(BaseModel):
     mode: Literal["edit", "readonly"]
     # inline: runs inside the orchestrator with GitLab tools only (no sandbox, no checkout); built-in agents only.
     engine: Literal["aider", "mini-swe", "llm", "inline"]
-    output: Literal["pipeline_fix", "merge_request", "note", "review", "mr_commit", "chat"]
+    output: Literal["pipeline_fix", "merge_request", "note", "review", "mr_commit", "chat", "mr_description", "triage",
+                    "security_fix"]
     triggers: list[Trigger]
     prompts: dict[str, str]  # role -> template file in agents/prompts
     context: list[str] = Field(default_factory=list)  # collector names
@@ -62,6 +70,8 @@ class AgentDef(BaseModel):
     note_suffix: str = ""
     # builtin: agents/*.yaml, prompts are template files. repo: .gitlab/agents/*.yaml, prompts are template text.
     source: Literal["builtin", "repo"] = "builtin"
+    # Cap on tasks per project per hour (automatic triggers anyone can fire should set one).
+    max_per_hour: int | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "AgentDef":
@@ -73,6 +83,10 @@ class AgentDef(BaseModel):
             raise ValueError(f"agent {self.name}: readonly agents must use the llm or inline engine")
         if self.engine == "inline" and (self.mode != "readonly" or self.source != "builtin"):
             raise ValueError(f"agent {self.name}: only built-in read-only agents can run inline")
+        if any(t.allow_any_author for t in self.triggers) and (self.mode != "readonly" or self.source != "builtin"):
+            raise ValueError(f"agent {self.name}: only built-in read-only agents may run for any author")
+        if self.output in ("mr_description", "triage") and self.engine != "inline":
+            raise ValueError(f"agent {self.name}: output {self.output} needs the inline engine")
         return self
 
     @property
@@ -83,7 +97,7 @@ class AgentDef(BaseModel):
 RESERVED_COMMANDS = {"help", "chat", "approve", "stop"}
 APPROVAL_LABEL = "agent::approved"
 MAX_FLOW_STEPS = 10
-MR_OUTPUTS = {"merge_request", "mr_commit", "pipeline_fix"}  # outputs that leave an MR behind for the next step
+MR_OUTPUTS = {"merge_request", "mr_commit", "pipeline_fix", "security_fix"}  # outputs that leave an MR behind for the next step
 CUSTOM_CONTEXT = {"issue", "issue_notes", "mr", "mr_diff", "discussion"}  # collectors safe for any trigger target
 
 
@@ -280,9 +294,10 @@ class Registry:
                 how.append(f"label `{t.label}`")
             elif t.event == "pipeline":
                 how.append(f"automatic on pipeline `{t.status}`")
-            elif t.event == "merge_request":
+            elif t.event in ("merge_request", "issue"):
                 gate = f" with label `{t.require_label}`" if t.require_label else ""
-                how.append(f"automatic on MR {'/'.join(t.actions)}{gate}")
+                noun = "MR" if t.event == "merge_request" else "issue"
+                how.append(f"automatic on {noun} {'/'.join(t.actions)}{gate}")
         return "<br>".join(how)
 
     def help_text(self, mention: str, agents: list[AgentDef], flows: list[FlowDef] | None = None) -> str:

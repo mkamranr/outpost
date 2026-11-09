@@ -1,6 +1,7 @@
 """Apply a sandbox result to GitLab. This is the only place the platform writes code to GitLab."""
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from .changes import ChangeRejected, ci_contents, to_actions
@@ -220,7 +221,7 @@ def review(ctx: OutputContext) -> str:
                 "old_path": c.get("old_path") or c["path"],
                 "new_line": line,
             }
-            ctx.gl.create_mr_discussion(pid, iid, body, position)
+            ctx.remember(ctx.gl.create_mr_discussion(pid, iid, body, position))
             posted += 1
         except Exception:  # noqa: BLE001 - lines outside the diff cannot be anchored; keep them in the summary
             unplaced.append(f"- `{c.get('path')}:{c.get('line')}` — {sanitize(c.get('body'), 1000)}")
@@ -249,3 +250,141 @@ def chat(ctx: OutputContext) -> str:
     ctx.produced = {"ok": True, "summary": sanitize(r["body"], 3000),
                     "note_id": note.get("id") if isinstance(note, dict) else None}
     return f"replied; handoff to {handoff['target']}" if routed else "replied"
+
+
+# -- MR descriptions --------------------------------------------------------------------
+
+DESCRIPTION_START = "<!-- outpost:description -->"
+DESCRIPTION_END = "<!-- /outpost:description -->"
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_GENERATED_BLOCK = re.compile(re.escape(DESCRIPTION_START) + r".*?" + re.escape(DESCRIPTION_END), re.DOTALL)
+
+
+def description_is_empty(description: str) -> bool:
+    """True for blank descriptions, untouched MR templates (comments only) and our own generated block."""
+    text = _HTML_COMMENT.sub("", _GENERATED_BLOCK.sub("", description or ""))
+    return len(re.sub(r"\s+", " ", text).strip()) < 40
+
+
+def merge_description(current: str, generated: str) -> str:
+    """Put the generated text in its marker block: replace an earlier block, otherwise append. Human text stays."""
+    block = f"{DESCRIPTION_START}\n{generated.strip()}\n{DESCRIPTION_END}"
+    current = current or ""
+    if _GENERATED_BLOCK.search(current):
+        return _GENERATED_BLOCK.sub(lambda _: block, current, count=1)
+    if not current.strip() or not _HTML_COMMENT.sub("", current).strip():
+        return block  # empty, or only an MR template's comments
+    return f"{current.rstrip()}\n\n{block}"
+
+
+@handler("mr_description")
+def mr_description(ctx: OutputContext) -> str:
+    r, t = ctx.result, ctx.target
+    if r.get("status") != "success" or not r.get("body"):
+        if ctx.task.command:  # stay quiet on automatic runs
+            ctx.notify(failure_message(ctx, "I could not write a description."))
+        return "failed"
+    pid, iid = t["project_id"], t["iid"]
+    # The model must not be able to close our block early and write outside it.
+    body = sanitize(r["body"], 12000).replace(DESCRIPTION_START, "").replace(DESCRIPTION_END, "")
+    body += f"\n\n<sub>🤖 Written by the `{ctx.agent.name}` agent from the diff; edit freely.</sub>"
+    current = ctx.gl.merge_request(pid, iid).get("description") or ""
+    ctx.gl.update_merge_request(pid, iid, description=merge_description(current, body))
+    ctx.produced = {"ok": True, "summary": sanitize(r["body"], 3000)}
+    if ctx.task.command:
+        ctx.notify("Updated the merge request description.")
+    return "description updated"
+
+
+# -- issue triage -----------------------------------------------------------------------
+
+@handler("triage")
+def triage(ctx: OutputContext) -> str:
+    r, t = ctx.result, ctx.target
+    if r.get("status") != "success":
+        if ctx.task.command:
+            ctx.notify(failure_message(ctx, "I could not triage this issue."))
+        return "failed"
+    pid, iid = t["project_id"], t["iid"]
+    data = r.get("triage") or {}
+    issue = ctx.gl.issue(pid, iid)
+    existing = {l["name"] for l in ctx.gl.labels(pid)}
+    current = set(issue.get("labels") or [])
+    # Only real labels, never agent trigger labels: a triage must not start other agents.
+    labels = [l for l in dict.fromkeys(str(x) for x in data.get("labels") or [])
+              if l in existing and l not in current and not l.startswith("agent::")][:5]
+    duplicates = []
+    for d in (data.get("duplicates") or [])[:5]:
+        try:
+            other = int(d.get("iid"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if other == iid:
+            continue
+        try:
+            found = ctx.gl.issue(pid, other)
+        except Exception:  # noqa: BLE001 - the model named an issue that does not exist
+            continue
+        duplicates.append(f"- #{other} {sanitize(found.get('title'), 200)}: {sanitize(str(d.get('reason') or ''), 300)}")
+    questions = [f"- {sanitize(str(q), 400)}" for q in (data.get("missing_info") or [])[:5] if str(q).strip()]
+
+    parts = [f"**Triage:** {sanitize(r.get('summary') or r.get('body') or '', 1000)}"]
+    if labels:
+        applied = ctx.project.triage.apply_labels
+        if applied:
+            ctx.gl.update_issue(pid, iid, add_labels=",".join(labels))
+        names = " ".join(f'~"{l}"' for l in labels)
+        parts.append(f"**{'Labels added' if applied else 'Suggested labels'}:** {names}")
+    if duplicates:
+        parts.append("**Possible duplicates:**\n" + "\n".join(duplicates))
+    if questions:
+        parts.append("**To help someone pick this up, could you add:**\n" + "\n".join(questions))
+    note = ctx.notify("\n\n".join(parts))
+    ctx.produced = {"ok": True, "summary": "\n\n".join(parts)[:3000],
+                    "note_id": note.get("id") if isinstance(note, dict) else None}
+    return f"triaged: {len(labels)} label(s), {len(duplicates)} duplicate(s), {len(questions)} question(s)"
+
+
+# -- security fixes ---------------------------------------------------------------------
+
+SECURITY_LABEL = "agent::security-fix"
+
+
+def _findings_table(ctx: OutputContext) -> str:
+    vulns = (ctx.bundle.get("context") or {}).get("vulnerabilities") or {}
+    findings = vulns.get("findings") or [] if isinstance(vulns, dict) else []
+    if not findings:
+        return ""
+    rows = ["| Severity | Finding | Location | Id |", "| --- | --- | --- | --- |"]
+    for f in findings:
+        where = f.get("file") or f.get("package") or "?"
+        if f.get("line"):
+            where += f":{f['line']}"
+        ident = ", ".join((f.get("identifiers") or [])[:2]) or str(f.get("id") or "")[:12]
+        rows.append(f"| {f['severity']} | {sanitize(str(f.get('name') or '?'), 120).replace('|', '/')} | "
+                    f"`{where}` | {sanitize(ident, 80).replace('|', '/')} |")
+    return "\n".join(rows)
+
+
+@handler("security_fix")
+def security_fix(ctx: OutputContext) -> str:
+    """On an MR: like mr_commit (commit on agent branches, else a follow-up MR). After a pipeline: a new MR."""
+    t, r = ctx.target, ctx.result
+    if t.get("kind") != "pipeline" and t.get("noteable_type") == "merge_request":
+        return mr_commit(ctx)
+    pipeline_id, ref, sha = t["pipeline_id"], t["ref"], t["sha"]
+    if r.get("status") != "success" or not r.get("changes"):
+        ctx.notify(failure_message(ctx, f"I could not fix the security findings of pipeline #{pipeline_id}."))
+        return "no fix"
+    actions = _actions(ctx)
+    _lint_ci(ctx, actions, ref)
+    title = sanitize(r.get("title") or f"Fix security findings from pipeline #{pipeline_id}", 200).splitlines()[0]
+    table = _findings_table(ctx)
+    intro = (f"Addresses security scanner findings from pipeline #{pipeline_id} on `{ref}` (commit {sha[:8]})."
+             + (f"\n\n**Findings in scope**\n\n{table}" if table else "")
+             + "\n\nThe summary below says which ones this change fixes; check that each fix removes the root cause.")
+    mr = _open_mr(ctx, actions=actions, branch=ctx.branch_name(f"vuln-{pipeline_id}"), start_sha=sha,
+                  target_branch=ref, title=title, intro=intro, labels=f"agent::generated,{SECURITY_LABEL}")
+    ctx.produced = {"ok": True, "mr_iid": mr["iid"], "summary": sanitize(r.get("summary") or "", 3000)}
+    ctx.notify(f"Pipeline #{pipeline_id} reported security findings. I opened !{mr['iid']} with proposed fixes.")
+    return mr.get("web_url", f"!{mr['iid']}")

@@ -10,6 +10,7 @@ Run inside a sandbox image (it has agent-runner, Jinja2, PyYAML and pydantic in 
 Each fixture is eval/fixtures/<case>/{case.yaml, repo/}. Results go to eval/out/report.{json,md}.
 GitLab tool calls (job logs, MRs, ...) are answered from the case's `tool_responses`; inline agents (chat) need no repo/.
 Re-run after any prompt, model, engine or vLLM change; compare the pass rate with the previous report.
+Cases exported from real tasks (eval/export_task.py) start as `draft: true` and are skipped until completed.
 """
 from __future__ import annotations
 
@@ -100,6 +101,11 @@ def score(case: dict, result: dict, repo: Path) -> dict:
         checks["comment_on"] = any(c.get("path") == expect["comment_on"] for c in result.get("comments") or [])
     if "handoff" in expect:
         checks["handoff"] = (result.get("handoff") or {}).get("target") == expect["handoff"]
+    triage = result.get("triage") or {}
+    if "labels" in expect:  # issue triage: these labels must be suggested
+        checks["labels"] = set(expect["labels"]) <= set(triage.get("labels") or [])
+    if "duplicate_of" in expect:
+        checks["duplicate_of"] = any(d.get("iid") == expect["duplicate_of"] for d in triage.get("duplicates") or [])
     if "tools_used" in expect:
         checks["tools_used"] = set(expect["tools_used"]) <= set(result.get("tools_used") or [])
     return checks
@@ -110,6 +116,7 @@ def main() -> int:
     ap.add_argument("--case", action="append", help="run only these fixtures (repeatable)")
     ap.add_argument("--engine", help="override the edit engine (aider | mini-swe)")
     ap.add_argument("--out", type=Path, default=ROOT / "eval" / "out")
+    ap.add_argument("--include-drafts", action="store_true", help="also run cases marked draft: true")
     args = ap.parse_args()
 
     registry = Registry.load(ROOT / "agents")
@@ -120,9 +127,13 @@ def main() -> int:
     shutil.rmtree(args.out, ignore_errors=True)
     args.out.mkdir(parents=True)
 
-    rows = []
+    rows, drafts = [], []
     for fixture in fixtures:
         case = yaml.safe_load((fixture / "case.yaml").read_text(encoding="utf-8"))
+        if case.get("draft") and not args.include_drafts:
+            drafts.append(fixture.name)
+            print(f"== {fixture.name}: draft, skipped (complete `expect` and remove `draft: true`)", flush=True)
+            continue
         if args.engine:
             case["engine"] = args.engine
         work = args.out / fixture.name
@@ -156,7 +167,8 @@ def main() -> int:
 
     total = len(rows)
     passed = sum(r["passed"] for r in rows)
-    report = {"model": llm.model, "engine_override": args.engine, "passed": passed, "total": total, "cases": rows}
+    report = {"model": llm.model, "engine_override": args.engine, "passed": passed, "total": total, "cases": rows,
+              "skipped_drafts": drafts}
     (args.out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     lines = [f"# Agent eval: {passed}/{total} passed (model `{llm.model}`)", "",
              "| Case | Agent | Result | Checks | Attempts | Time |", "| --- | --- | --- | --- | --- | --- |"]
@@ -164,6 +176,8 @@ def main() -> int:
         checks = ", ".join(f"{k} {'✓' if v else '✗'}" for k, v in r["checks"].items())
         lines.append(f"| {r['case']} | {r['agent']} | {'PASS' if r['passed'] else 'FAIL'} | {checks} | "
                      f"{r['attempts']} | {r['seconds']}s |")
+    if drafts:
+        lines += ["", f"Skipped drafts: {', '.join(drafts)}"]
     (args.out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n" + "\n".join(lines))
     return 0 if passed == total else 1

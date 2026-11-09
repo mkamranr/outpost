@@ -1,0 +1,20 @@
+name: mr-describer
+description: Writes a merge request description from its diff and linked issues (what changed, why, how to test), inside a marked block that keeps the author's text.
+phase: 5
+mode: readonly
+engine: inline          # runs inside the orchestrator; edits only the MR description, never code
+output: mr_description
+max_attempts: 1
+timeout_minutes: 4
+context_budget_tokens: 20000
+context: [mr, mr_diff, linked_issues]
+tools: [get_issue, get_file, search_code]
+max_per_hour: 30
+prompts:
+  main: mr-describer.md.j2
+triggers:
+  - event: merge_request
+    actions: [open]       # projects.yaml mr_describer.on_open: only_if_empty (default) | always
+  - event: note
+    commands: [describe]
+    targets: [merge_request]

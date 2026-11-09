@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 import yaml
 
-from . import flows, inline, outputs, tickets, tools
+from . import feedback, flows, inline, outputs, tickets, tools
 from .catalog import CatalogCache, RepoCatalog
 from .collectors import CollectContext, collect
 from .config import ProjectConfig, ProjectsConfig, Settings
@@ -44,6 +44,7 @@ class Platform:
         self._inline_pool = ThreadPoolExecutor(settings.chat_workers, "inline") if settings.chat_workers > 0 else None
         # Inline agents get their own capacity so a question is not queued behind long sandbox jobs.
         self.inline_agents = frozenset(n for n, a in registry.agents.items() if a.engine == "inline")
+        self.reactions = feedback.ReactionPoller(self)
 
     # -- clients ------------------------------------------------------------------
     def gitlab(self, token_ref: str) -> GitLab:
@@ -94,6 +95,12 @@ class Platform:
         cfg = self.projects.for_project(event.project_path)
         if cfg is None:
             return {"ignored": "project not onboarded"}
+        try:  # before routing: merges, closes and green pipelines on agent branches are never routed
+            recorded = feedback.record_outcome(self, event)
+            if recorded:
+                log.info("feedback %s recorded from %s event", recorded, event.kind)
+        except Exception:  # noqa: BLE001 - feedback must not block routing
+            log.exception("recording outcome feedback failed")
         if event.actor_username != self.settings.bot_username:
             ctl = flows.control(event, self.settings.mention)
             if ctl:
@@ -111,8 +118,12 @@ class Platform:
 
         if result.needs_permission_check:
             if not event.actor_id or gl.member_access_level(event.project_id, event.actor_id) < DEVELOPER:
-                log.info("ignoring %s from %s: needs Developer access", event.kind, event.actor_username)
-                return {"ignored": "actor lacks Developer access"}
+                # Agents whose trigger allows any author (issue triage) still run; nothing else does.
+                anyone = [m for m in result.matches if m.any_author]
+                if not anyone or result.reply:
+                    log.info("ignoring %s from %s: needs Developer access", event.kind, event.actor_username)
+                    return {"ignored": "actor lacks Developer access"}
+                result.matches, result.flows = anyone, []
 
         if result.reply:
             reply = result.reply
@@ -132,6 +143,11 @@ class Platform:
             agent = match.agent
             if self.store.count_for_subject(agent.name, match.subject_key, ACTIVE):
                 created.append({"agent": agent.name, "skipped": "already working on this"})
+                continue
+            if agent.max_per_hour is not None and self.store.count_since(
+                    agent.name, event.project_id, utcnow() - timedelta(hours=1)) >= agent.max_per_hour:
+                log.warning("%s: hourly limit (%d) reached in %s", agent.name, agent.max_per_hour, event.project_path)
+                created.append({"agent": agent.name, "skipped": "hourly limit"})
                 continue
             if event.kind == "pipeline" and (event.ref or "").startswith("agent/"):
                 # On our own branches the pipeline fixer iterates; cap it so a stubborn failure ends with a comment.
@@ -241,11 +257,31 @@ class Platform:
             return None, cfg, "custom agents are disabled for this project"
         if not cfg.sandbox_image and agent.engine != "inline":
             raise RuntimeError("no sandbox_image configured for this project")
+        if agent.output == "mr_description" and task.command is None and cfg.mr_describer.on_open == "only_if_empty":
+            # Automatic run on MR open: leave descriptions the author wrote alone (and spend no GPU on them).
+            current = gl.merge_request(t["project_id"], t["iid"]).get("description") or ""
+            if not outputs.description_is_empty(current):
+                return None, cfg, "the merge request already has a description"
+
+        automatic = task.command is None and not task.flow_run_id
+        if agent.output == "security_fix" and automatic:
+            policy = cfg.security_remediator
+            open_mrs = gl.merge_requests(t["project_id"], state="opened", labels=outputs.SECURITY_LABEL, per_page=100)
+            if len(open_mrs) >= policy.max_open_mrs:
+                return None, cfg, f"{len(open_mrs)} security fix MRs are already open"
 
         context = collect(agent.context, CollectContext(
             gl=gl, target=t, project=cfg, sha=sha, ref=ref,
             budget_tokens=agent.context_budget_tokens, bot_username=self.settings.bot_username,
+            instruction=task.instruction,
         ))
+        vulns = context.get("vulnerabilities")
+        if agent.output == "security_fix" and not task.flow_run_id and isinstance(vulns, dict) \
+                and not vulns.get("findings") and not vulns.get("error"):
+            # Nothing to fix: do not start a sandbox. (In a flow, the security analyst's report is the input.)
+            where = f"pipeline #{vulns['pipeline_id']}" if vulns.get("pipeline_id") else "this merge request"
+            return None, cfg, (f"no security findings at or above `{cfg.security_remediator.min_severity}` in "
+                               f"{where}" + (f" ({vulns['note']})" if vulns.get("note") else ""))
         variables = {
             "context": context,
             "target": t,
@@ -351,7 +387,12 @@ class Platform:
         if not self.store.use_tool_call(task.id, TOOL_CALL_CAP):
             return f"error: the tool call budget ({TOOL_CALL_CAP}) is used up. Submit your answer now."
         log.info("task %s (%s) tool %s", task.id, agent.name, name)
-        return tools.run(name, self.tool_context(task), args)
+        content = tools.run(name, self.tool_context(task), args)
+        try:
+            self.store.log_tool_call(task.id, name, args, content, max_entries=TOOL_CALL_CAP)
+        except Exception:  # noqa: BLE001 - the log only feeds eval export
+            log.exception("could not log tool call for task %s", task.id)
+        return content
 
     # -- results & housekeeping ----------------------------------------------------------
     def apply_result(self, task: Task) -> None:
@@ -362,6 +403,10 @@ class Platform:
         try:
             outcome = outputs.apply(ctx)
             self.store.update(task.id, status=DONE, outcome=outcome[:500], produced=ctx.produced)
+            try:
+                self.store.add_links(task, feedback.links_for(ctx))
+            except Exception:  # noqa: BLE001 - links only feed metrics
+                log.exception("recording links for task %s failed", task.id)
             log.info("task %s (%s) done: %s", task.id, agent.name, outcome)
         except Exception as exc:  # noqa: BLE001
             log.exception("applying result failed for task %s", task.id)
@@ -463,3 +508,4 @@ class Platform:
         for task in self.store.list_by_status(RESULT_RECEIVED):
             self.apply_result(task)
         self.check_dispatched()
+        self.reactions.maybe_poll()

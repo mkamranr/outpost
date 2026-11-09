@@ -14,6 +14,7 @@ mode: readonly                    # edit = changes files and runs tests; readonl
 engine: llm                       # edit: aider | mini-swe     readonly: llm (tool loop with list/read/grep)
                                   #   or inline (runs in the orchestrator, GitLab tools only; built-in agents only)
 output: review                    # pipeline_fix | merge_request | mr_commit | note | review | chat
+                                  #   | mr_description | triage (inline only) | security_fix
 context: [mr, mr_diff]            # collectors, see below
 tools: [get_merge_request, get_job_log]  # GitLab tools the agent may call while it runs, see below
 context_budget_tokens: 32000      # split across collectors; a 27B model does best on 20-40K focused tokens
@@ -21,6 +22,7 @@ max_attempts: 3                   # edit agents: engine→test iterations inside
 timeout_minutes: 20               # wall clock for the sandbox job
 classify: false                   # pipeline fixer only: run prompts.classify first (code / ci_config / flaky)
 allow_ci_changes: false           # may this agent edit .gitlab-ci.yml / .gitlab/ci/?
+max_per_hour: 20                  # optional cap on tasks per project per hour (set it on automatic triggers)
 note_marker: "<!-- agent:plan -->"  # note outputs: hidden marker other agents can find (planner → code-writer)
 note_suffix: "Reply `{mention} approve`…"
 prompts:
@@ -35,9 +37,16 @@ triggers:
   - event: merge_request          # MR lifecycle; "update" only fires when new commits were pushed
     actions: [open, reopen, update]
     require_label: agent::review
+  - event: issue                  # issue lifecycle: open, update, close, reopen
+    actions: [open]
+    allow_any_author: true        # also for authors without Developer access (built-in read-only agents only)
   - event: pipeline
     status: failed
 ```
+
+Every trigger needs Developer access from the person who fired it, except `merge_request` / `issue` triggers
+with `allow_any_author: true`. Those exist for issue triage, where Reporters open most issues. Such agents must be
+read-only and built in, and should set `max_per_hour`.
 
 ## Collectors (`orchestrator/app/collectors/`)
 
@@ -50,6 +59,10 @@ triggers:
 | `mr` / `mr_diff` | MR metadata and diff |
 | `discussion` | The thread a command came from, including the file and line it is attached to |
 | `subject` | Summary of the issue, MR (with head pipeline) or commit a comment is on, for chat |
+| `linked_issues` | Issues an MR refers to (`#12` in its description, or a `12-…` source branch) |
+| `project_labels` | The project's labels and descriptions, without `agent::*` trigger labels |
+| `ref_range` | Commits and referenced MRs between two refs taken from the instruction (`v1.2.0..v1.3.0`) |
+| `vulnerabilities` | Security scanner findings of the pipeline (or the MR's head pipeline, limited to the files it changes), filtered by `security_remediator.min_severity` and `.gitlab/agent-security-ignore.yml`, with code around each location |
 
 Templates receive `context.<collector>`, `instruction` (the text after the command), `repo` (`path`, `ref`,
 `sha`), `project` (merged config), `agent`, `bot_username`, and `catalog` (chat only: the agents and flows it can
@@ -69,6 +82,9 @@ within `ctx.budget_tokens` (use `truncate()`). Import its module in `collectors/
 | `note` | Comment on the issue, MR or commit (in the triggering thread when there is one) |
 | `review` | Line-anchored MR discussions; comments that cannot be anchored go into the summary |
 | `chat` | Reply in the thread; an optional handoff starts a read-only agent, or posts the command for an agent or flow that changes code |
+| `mr_description` | Writes the MR description inside `<!-- outpost:description -->` markers: replaces an earlier block, otherwise appends, so the author's text stays |
+| `triage` | One comment with suggested labels (existing, non-`agent::` labels only; applied when `triage.apply_labels`), verified duplicates and questions for the reporter |
+| `security_fix` | On an MR: like `mr_commit`. After a pipeline: new `agent/…-vuln-<id>` branch + Draft MR labelled `agent::security-fix`, listing the findings in scope |
 
 All changes pass `outputs/changes.py` before anything is committed. That check rejects:
 * path traversal and `.git/`
@@ -189,7 +205,24 @@ restart, and comment `@agent docs` on an MR. Add an `eval/fixtures/<case>/` cove
 `eval/run.py` renders the real prompts from `agents/` for each fixture. It runs the real sandbox runner
 against vLLM and re-runs the tests itself to score the result. A fixture is a `repo/` directory plus a
 `case.yaml` with the `agent`, `test` commands, the `context` a collector would have produced, and `expect`
-(`classification`, `tests_pass`, `changes`, `body_contains`, `comment_on`, `handoff`, `tools_used`).
+(`classification`, `tests_pass`, `changes`, `body_contains`, `comment_on`, `handoff`, `tools_used`, and for
+issue triage `labels` and `duplicate_of`).
 `tool_responses` maps tool names to canned results (a string, or a list returned in order). `catalog` gives the
 chat agent its handoff table. Inline agents such as `chat` need no `repo/`.
 Add a fixture for every real failure an agent gets wrong. That is how prompt quality improves without regressions.
+
+### Turning real failures into fixtures
+
+Every task stores the context it collected and the results of its tool calls, so a task that went wrong can be
+replayed offline. On the dashboard (`/admin`), failed tasks and tasks with a 👎 or a closed MR have an
+**Export fixture** link. From a shell:
+
+```bash
+python eval/export_task.py --url https://outpost.internal --token "$ADMIN_TOKEN" --task <task id> --name my-case
+```
+
+This writes `eval/fixtures/my-case/` with the task's `context`, `instruction`, `target`, `tool_responses` and a
+snapshot of the repository at the task's commit. If the repository is larger than `FIXTURE_MAX_REPO_MB`, only
+the files the task read or changed are included. The case starts as `draft: true` with a guessed `expect`, and
+`eval/run.py` skips drafts (or runs them with `--include-drafts`). Write down what a good result is, complete
+`expect`, and remove `draft: true`.

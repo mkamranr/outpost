@@ -64,6 +64,23 @@ SUBMIT_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "required": ["body"],
     },
+    "triage": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string", "description": "One or two sentences: what the issue is about"},
+            "labels": {"type": "array", "items": {"type": "string"},
+                       "description": "Up to 5 existing project labels that fit"},
+            "duplicates": {
+                "type": "array",
+                "description": "Existing issues this one likely duplicates (only ones you looked at)",
+                "items": {"type": "object", "properties": {"iid": {"type": "integer"}, "reason": {"type": "string"}},
+                          "required": ["iid", "reason"]},
+            },
+            "missing_info": {"type": "array", "items": {"type": "string"},
+                             "description": "Questions for the reporter about missing details (versions, steps...)"},
+        },
+        "required": ["summary", "labels", "duplicates", "missing_info"],
+    },
 }
 
 SYSTEM = (
@@ -160,6 +177,9 @@ def _valid(output: str, args: dict[str, Any] | None) -> bool:
         return isinstance(args.get("body"), str) and bool(args["body"].strip())
     if output == "brief":
         return isinstance(args.get("findings"), str)
+    if output == "triage":
+        return isinstance(args.get("summary"), str) and all(
+            isinstance(args.get(k, []), list) for k in ("labels", "duplicates", "missing_info"))
     return isinstance(args.get("summary"), str) and isinstance(args.get("comments", []), list)
 
 

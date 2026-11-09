@@ -31,9 +31,10 @@ class FakeGitLab:
         self.routes: list[tuple[str, re.Pattern[str], Callable[[httpx.Request, re.Match[str]], Any]]] = []
         self.calls: list[tuple[str, str, Any]] = []
 
-    def on(self, method: str, pattern: str, response: Any) -> None:
+    def on(self, method: str, pattern: str, response: Any, prefix: str = "/api/v4") -> None:
+        """Answer `method` on paths matching `pattern` (under /api/v4; pass prefix="/api" for /api/graphql)."""
         fn = response if callable(response) else (lambda req, m, r=response: r)
-        self.routes.insert(0, (method, re.compile(f"^/api/v4{pattern}$"), fn))
+        self.routes.insert(0, (method, re.compile(f"^{prefix}{pattern}$"), fn))
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
