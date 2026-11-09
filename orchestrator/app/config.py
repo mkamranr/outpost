@@ -11,7 +11,9 @@ from pydantic import BaseModel, Field, model_validator
 
 # Agent configuration lives here; an agent must never be able to change what agents may do.
 # The security ignore list too: an agent must not silence the findings it is asked to fix.
-ALWAYS_PROTECTED = [".gitlab/agent.yml", ".gitlab/agents/", ".gitlab/agent-security-ignore.yml"]
+# And the team instructions every agent reads: an agent must not rewrite its own instructions.
+ALWAYS_PROTECTED = [".gitlab/agent.yml", ".gitlab/agents/", ".gitlab/agent-security-ignore.yml",
+                    ".gitlab/agent-instructions.md"]
 
 
 def _env(name: str, default: str | None = None) -> str | None:
