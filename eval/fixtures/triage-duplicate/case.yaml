@@ -1,0 +1,26 @@
+agent: issue-triage
+description: A new bug report duplicates an open issue; triage should find it, suggest the bug + storage labels and ask for the version.
+instruction: ""
+target: {kind: issue, project_id: 1, noteable_type: issue, iid: 140}
+context:
+  issue:
+    iid: 140
+    title: App freezes when exporting to CSV
+    labels: []
+    description: |
+      When I click Export > CSV on a big project the whole app freezes and I have to kill it.
+  project_labels:
+    - {name: bug, description: Something is broken}
+    - {name: feature, description: New functionality}
+    - {name: storage, description: Import, export and persistence}
+    - {name: ui, description: Layout and styling}
+    - {name: docs, description: Documentation}
+tool_responses:
+  search_issues:
+    - '[{"iid": 97, "title": "CSV export hangs for projects with > 10k rows", "state": "opened"}]'
+    - '[]'
+  get_issue: '{"iid": 97, "title": "CSV export hangs for projects with > 10k rows", "state": "opened", "description": "Export to CSV never finishes and the UI stops responding when a project has more than 10k rows."}'
+expect:
+  labels: [bug, storage]
+  duplicate_of: 97
+  tools_used: [search_issues]

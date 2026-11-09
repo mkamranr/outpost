@@ -33,6 +33,8 @@ class OutputContext:
     produced: dict[str, Any] = field(default_factory=dict)
     # Chat handoffs: (target, instruction) -> a markdown line saying what happened. Supplied by the platform.
     handoff: Callable[[str, str], str] | None = None
+    # Ids of notes posted on the subject issue/MR, so people's reactions to them count as feedback.
+    notes: list[int] = field(default_factory=list)
 
     @property
     def target(self) -> dict[str, Any]:
@@ -52,12 +54,20 @@ class OutputContext:
         text = sanitize(body) + self.footer()
         pid = t["project_id"]
         if t.get("discussion_id") and t.get("noteable_type") in ("issue", "merge_request"):
-            return self.gl.reply_to_discussion(pid, t["noteable_type"], t["iid"], t["discussion_id"], text)
+            return self.remember(self.gl.reply_to_discussion(pid, t["noteable_type"], t["iid"], t["discussion_id"], text))
         if t.get("noteable_type") in ("issue", "merge_request") and t.get("iid"):
-            return self.gl.create_note(pid, t["noteable_type"], t["iid"], text)
+            return self.remember(self.gl.create_note(pid, t["noteable_type"], t["iid"], text))
         if t.get("sha"):
             return self.gl.create_commit_comment(pid, t["sha"], text)
         return None
+
+    def remember(self, note: Any) -> Any:
+        """Keep the id of a note (or of a new discussion's first note) posted on the subject."""
+        if isinstance(note, dict):
+            note_id = note.get("id") if "notes" not in note else ((note.get("notes") or [{}])[0].get("id"))
+            if isinstance(note_id, int):
+                self.notes.append(note_id)
+        return note
 
     def attempts_markdown(self) -> str:
         attempts = self.result.get("attempts") or []

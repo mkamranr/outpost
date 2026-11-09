@@ -9,3 +9,4 @@ deploy/config/projects.yaml
 deploy/secrets/*
 !deploy/secrets/README.md
 eval/out/
+eval/fixtures/.incoming/

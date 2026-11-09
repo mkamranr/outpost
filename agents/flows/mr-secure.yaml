@@ -1,0 +1,9 @@
+name: mr-secure
+description: Audits a merge request for security issues, then fixes what the audit and the security scanners found.
+triggers:
+  - event: note
+    commands: [secure]
+    targets: [merge_request]
+steps:
+  - agent: security-analyst
+  - agent: security-remediator   # gets the analyst's report as context, plus the MR pipeline's scanner findings

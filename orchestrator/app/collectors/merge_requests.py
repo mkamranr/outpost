@@ -1,10 +1,15 @@
 """Merge request context: metadata, the diff under review, and the thread an instruction came from."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import CollectContext, collector, truncate
+
 from .ci import _format_diffs
+
+_ISSUE_REF = re.compile(r"(?<![\w/!&])#(\d+)(?!\d)")
+_BRANCH_ISSUE = re.compile(r"^(\d+)-")
 
 
 @collector("mr")
@@ -43,3 +48,24 @@ def discussion(ctx: CollectContext) -> dict[str, Any]:
             "old_line": position.get("old_line"),
         }
     return {"notes": [truncate(n, ctx.budget_tokens // max(len(notes), 1)) for n in notes], "position": pos}
+
+
+@collector("linked_issues")
+def linked_issues(ctx: CollectContext) -> list[dict[str, Any]]:
+    """Issues an MR refers to: `#12` in its description, or a `12-some-title` source branch."""
+    pid = ctx.target["project_id"]
+    data = ctx.gl.merge_request(pid, ctx.target["iid"])
+    iids = [int(i) for i in _ISSUE_REF.findall(data.get("description") or "")]
+    m = _BRANCH_ISSUE.match(data.get("source_branch") or "")
+    if m:
+        iids.insert(0, int(m.group(1)))
+    out = []
+    unique = list(dict.fromkeys(iids))[:5]
+    for iid in unique:
+        try:
+            issue = ctx.gl.issue(pid, iid)
+        except Exception:  # noqa: BLE001
+            continue
+        out.append({"iid": iid, "title": issue.get("title"), "description": truncate(
+            issue.get("description") or "", ctx.budget_tokens // max(len(unique), 1), keep="head")})
+    return out

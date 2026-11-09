@@ -1,0 +1,20 @@
+name: security-remediator
+description: Fixes security scanner findings (SAST, dependency and secret detection) at the root cause, tests the fix, and commits it or opens a draft MR.
+phase: 5
+mode: edit
+engine: aider
+output: security_fix
+max_attempts: 3
+timeout_minutes: 35
+context_budget_tokens: 26000
+context: [vulnerabilities]
+tools: [get_merge_request, get_mr_diff, get_file, search_code, list_pipelines, get_pipeline_jobs, get_job_log]
+prompts:
+  main: security-remediator.md.j2
+triggers:
+  - event: note
+    commands: [remediate]
+    targets: [merge_request]
+  # Only when the project sets security_remediator.auto: true (and only on security_remediator.branches).
+  - event: pipeline
+    status: success

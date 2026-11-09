@@ -17,6 +17,7 @@ class Match:
     subject_key: str
     command: str | None = None
     instruction: str = ""
+    any_author: bool = False  # fired by a trigger that runs for authors without Developer access
 
 
 @dataclass
@@ -76,18 +77,31 @@ def route(event: Event, registry: Registry, project: ProjectConfig, bot_username
 
 def _route_pipeline(event: Event, enabled: list[AgentDef], project: ProjectConfig) -> RouteResult:
     result = RouteResult()
-    if not event.ref or not project.branch_allowed(event.ref):
-        result.reason = f"branch {event.ref} not enabled for pipeline fixing"
+    if not event.ref:
+        result.reason = "pipeline without a ref"
         return result
     for agent in enabled:
         for t in agent.triggers:
-            if t.event == "pipeline" and t.status == event.pipeline_status:
+            if t.event != "pipeline" or t.status != event.pipeline_status:
+                continue
+            if agent.output == "security_fix":
+                # Opt-in per project, and only on the configured (default) branches.
+                policy = project.security_remediator
+                if policy.auto and policy.branch_allowed(event.ref):
+                    result.matches.append(Match(
+                        agent=agent,
+                        dedupe_key=f"{agent.name}:pipeline:{event.project_id}:{event.sha}",
+                        subject_key=f"{event.project_id}:security:{event.ref}",
+                    ))
+            elif project.branch_allowed(event.ref):
                 result.matches.append(Match(
                     agent=agent,
                     dedupe_key=f"{agent.name}:pipeline:{event.project_id}:{event.pipeline_id}",
                     subject_key=f"{event.project_id}:branch:{event.ref}",
                 ))
-                break
+            break
+    if not result.matches:
+        result.reason = f"no pipeline trigger for {event.pipeline_status} on {event.ref}"
     return result
 
 
@@ -135,7 +149,7 @@ def _note_match(event: Event, agent: AgentDef, subject_key: str, command: str, i
 
 
 def _route_object(event: Event, enabled: list[AgentDef], flows: list[FlowDef]) -> RouteResult:
-    result = RouteResult(needs_permission_check=True)
+    result = RouteResult()
     for flow in flows:
         for t in flow.triggers:
             if t.event == "label" and t.label in event.added_labels and event.noteable_type in t.targets:
@@ -160,13 +174,24 @@ def _route_object(event: Event, enabled: list[AgentDef], flows: list[FlowDef]) -
             ):
                 fired = True
                 key = f"mr:{event.action}:{event.sha}"
+            elif (
+                t.event == "issue"
+                and event.kind == "issue"
+                and event.action in t.actions
+                and (t.require_label is None or t.require_label in event.labels)
+            ):
+                fired = True
+                key = f"issue:{event.action}"
             if fired:
                 result.matches.append(Match(
                     agent=agent,
                     dedupe_key=f"{agent.name}:{event.project_id}:{event.noteable_type}:{event.iid}:{key}",
                     subject_key=f"{event.project_id}:{event.noteable_type}:{event.iid}",
+                    any_author=t.allow_any_author,
                 ))
                 break
+    # Labels and flows need Developer access; so does any agent whose trigger does not allow any author.
+    result.needs_permission_check = bool(result.flows) or any(not m.any_author for m in result.matches)
     if not result.matches and not result.flows:
         result.reason = "no trigger matched"
     return result

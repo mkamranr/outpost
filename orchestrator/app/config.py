@@ -4,13 +4,14 @@ from __future__ import annotations
 import fnmatch
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
 # Agent configuration lives here; an agent must never be able to change what agents may do.
-ALWAYS_PROTECTED = [".gitlab/agent.yml", ".gitlab/agents/"]
+# The security ignore list too: an agent must not silence the findings it is asked to fix.
+ALWAYS_PROTECTED = [".gitlab/agent.yml", ".gitlab/agents/", ".gitlab/agent-security-ignore.yml"]
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -48,6 +49,10 @@ class Settings(BaseModel):
     llm_api_key: str = "EMPTY"
     llm_ca_file: str | None = None
     chat_workers: int = 2  # concurrent inline runs; 0 runs them synchronously in the worker loop (tests)
+    # Feedback: how often the worker reads 👍/👎 on agent notes and MRs, and for how long after a task.
+    feedback_poll_seconds: int = 300
+    feedback_window_days: int = 14
+    fixture_max_repo_mb: int = 20  # eval fixture export: larger repos export only the files the task touched
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -83,6 +88,9 @@ class Settings(BaseModel):
             "llm_api_key": "LLM_API_KEY",
             "llm_ca_file": "LLM_CA_FILE",
             "chat_workers": "CHAT_WORKERS",
+            "feedback_poll_seconds": "FEEDBACK_POLL_SECONDS",
+            "feedback_window_days": "FEEDBACK_WINDOW_DAYS",
+            "fixture_max_repo_mb": "FIXTURE_MAX_REPO_MB",
         }
         for field, env_name in optional.items():
             value = _env(env_name)
@@ -100,6 +108,32 @@ class Settings(BaseModel):
 class PipelineFixerConfig(BaseModel):
     branches: list[str] = Field(default_factory=lambda: ["*"])
     skip_stale: bool = True  # ignore failures for SHAs that are no longer the branch head
+
+
+class MrDescriberConfig(BaseModel):
+    # only_if_empty: on MR open, write a description only when the author left it (nearly) empty.
+    on_open: Literal["only_if_empty", "always"] = "only_if_empty"
+
+
+class TriageConfig(BaseModel):
+    apply_labels: bool = False  # false: only suggest labels in the triage comment
+
+
+SEVERITIES = ["critical", "high", "medium", "low", "info", "unknown"]
+
+
+class SecurityRemediatorConfig(BaseModel):
+    auto: bool = False  # also run after successful pipelines on `branches`, not only on "@agent remediate"
+    branches: list[str] = Field(default_factory=lambda: ["main", "master"])
+    min_severity: Literal["critical", "high", "medium", "low"] = "high"
+    max_open_mrs: int = 2  # automatic runs pause while this many agent::security-fix MRs are open
+
+    def wanted(self, severity: str) -> bool:
+        sev = severity if severity in SEVERITIES else "unknown"
+        return SEVERITIES.index(sev) <= SEVERITIES.index(self.min_severity)
+
+    def branch_allowed(self, ref: str) -> bool:
+        return any(fnmatch.fnmatchcase(ref, pattern) for pattern in self.branches)
 
 
 class CustomAgentsPolicy(BaseModel):
@@ -125,6 +159,9 @@ class ProjectConfig(BaseModel):
     allow_push_to_mr_branch: bool = False
     pipeline_fixer: PipelineFixerConfig = Field(default_factory=PipelineFixerConfig)
     custom_agents: CustomAgentsPolicy = Field(default_factory=CustomAgentsPolicy)
+    mr_describer: MrDescriberConfig = Field(default_factory=MrDescriberConfig)
+    triage: TriageConfig = Field(default_factory=TriageConfig)
+    security_remediator: SecurityRemediatorConfig = Field(default_factory=SecurityRemediatorConfig)
 
     @model_validator(mode="after")
     def _always_protected(self) -> "ProjectConfig":

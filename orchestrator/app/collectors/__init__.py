@@ -5,7 +5,7 @@ collector trims hard and says what it dropped.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from ..config import ProjectConfig
@@ -24,6 +24,7 @@ class CollectContext:
     ref: str
     budget_tokens: int
     bot_username: str = ""
+    instruction: str = ""  # the text after the command, e.g. a ref range for release notes
 
 
 Collector = Callable[[CollectContext], Any]
@@ -57,7 +58,7 @@ def collect(names: list[str], ctx: CollectContext) -> dict[str, Any]:
         fn = COLLECTORS.get(name)
         if fn is None:
             raise KeyError(f"unknown collector {name}")
-        sub = CollectContext(ctx.gl, ctx.target, ctx.project, ctx.sha, ctx.ref, share, ctx.bot_username)
+        sub = replace(ctx, budget_tokens=share)
         try:
             out[name] = fn(sub)
         except Exception as exc:  # noqa: BLE001 - context is best effort
@@ -65,4 +66,4 @@ def collect(names: list[str], ctx: CollectContext) -> dict[str, Any]:
     return out
 
 
-from . import chat, ci, issues, merge_requests  # noqa: E402,F401  (register collectors)
+from . import chat, ci, issues, merge_requests, releases, security  # noqa: E402,F401  (register collectors)

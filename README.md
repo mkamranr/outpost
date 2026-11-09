@@ -25,6 +25,10 @@ sandbox. Requirements and rationale: [`Self-Built GitLab DAP on Air-Gapped GitLa
 | `security-analyst` | `@agent security` on an MR | security triage report |
 | `test-writer` | `@agent tests` on an MR | added tests, verified passing |
 | `chat` | any other `@agent <question>` on an issue or MR; `@agent chat …` | a threaded answer, and a handoff to the right agent or flow |
+| `security-remediator` | `@agent remediate` on an MR; after green default-branch pipelines when `security_remediator.auto` | root-cause fixes for SAST / dependency / secret findings: commit, follow-up MR or Draft MR |
+| `mr-describer` | MR opened with an empty description (automatic); `@agent describe` | what / why / how to test / risks, in a marked block of the description |
+| `release-notes` | `@agent release-notes v1.2.0..v1.3.0` on an issue or MR | grouped release notes from the commits and MRs in the range |
+| `issue-triage` | issue opened (automatic, any author); `@agent triage` | suggested labels, likely duplicates, questions for the reporter |
 
 `@agent help` lists the agents and flows enabled for a project. Agents are YAML + prompt templates in
 [`agents/`](agents); see [docs/agents.md](docs/agents.md) to tune or add one.
@@ -44,6 +48,7 @@ with these tools before they start editing.
 | `issue-to-mr` | `@agent build` / label `agent::flow::issue-to-mr` on an issue | planner → **human approval** → code-writer → code-reviewer + security-analyst on the new MR |
 | `fix-and-review` | `@agent fix-and-review` on an MR | pipeline-fixer → code-reviewer on the fix MR |
 | `mr-deep-review` | `@agent deep-review` / label `agent::flow::deep-review` on an MR | code-reviewer + security-analyst → test-writer |
+| `mr-secure` | `@agent secure` on an MR | security-analyst → security-remediator (fixes what the audit and the scanners found) |
 
 The flow keeps one checklist comment up to date on the issue or MR. A failed step stops the flow. Approval
 gates wait for `@agent approve <corrections>` or the `agent::approved` label. `@agent stop` cancels a flow.
@@ -64,6 +69,20 @@ agents as `.gitlab/agents/*.yaml` on the default branch. Each file is a prompt, 
 They're read-only by default, namespaced `custom/<name>`, can't take built-in commands or labels, and are only
 read from the default branch. `@agent help` lists them, along with any files that were rejected and why. See
 [docs/agents.md](docs/agents.md#custom-agents-gitlabagents).
+
+### Feedback and dashboard
+
+Outpost records whether agent work helped:
+* 👍 / 👎 on the agents' notes and MRs, polled every `FEEDBACK_POLL_SECONDS`. Withdrawn reactions are removed.
+* agent MRs merged, or closed without merging
+* pipelines going green on agent branches
+
+`/admin` is a server-rendered page with no JavaScript or CDN. It shows each agent's task counts, failures, MR
+acceptance rate, reactions, median duration and tool use, plus running flows, queue depth and recent tasks.
+`/metrics` serves the same numbers in Prometheus format. Both need the admin token: browsers use HTTP Basic
+with any user name and the token as the password, and Prometheus uses `Authorization: Bearer`. Failed or 👎
+tasks can be exported as [eval fixtures](docs/agents.md#turning-real-failures-into-fixtures), so real failures
+become regression tests.
 
 ## How it works
 
@@ -96,12 +115,12 @@ GitLab ──webhook──► orchestrator (FastAPI + worker + Postgres)        
 
 | Path | Contents |
 | --- | --- |
-| `orchestrator/` | FastAPI webhook receiver, router, task queue, context collectors, GitLab tools, flow engine, custom-agent catalog, inline chat, output handlers |
+| `orchestrator/` | FastAPI webhook receiver, router, task queue, context collectors, GitLab tools, flow engine, custom-agent catalog, inline agents, output handlers, feedback, dashboard and metrics, fixture export |
 | `agents/` | agent definitions (`*.yaml`), prompt templates (`prompts/*.md.j2`) and flows (`flows/*.yaml`) |
 | `sandbox/` | `agent-runner` (runs inside the CI job), engines (Aider, mini-SWE-agent, read-only tool loop), image Dockerfiles, sandbox project CI |
 | `deploy/` | docker compose stack, runner config + egress firewall, config templates, GitLab bootstrap script |
 | `build/` | internet-side image build, offline verification, air-gap-side load/push |
-| `eval/` | offline evaluation harness with seeded-failure fixtures |
+| `eval/` | offline evaluation harness with seeded-failure fixtures, and `export_task.py` to turn real tasks into fixtures |
 | `scripts/` | vLLM tool-calling smoke test, stub LLM |
 
 ## Getting started
