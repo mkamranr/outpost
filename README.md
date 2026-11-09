@@ -5,7 +5,8 @@
 <h1 align="center">Outpost</h1>
 
 <p align="center"><b>Self-hosted AI agents for air-gapped GitLab:</b> pipeline fixing, planning, code writing,
-review, multi-agent flows and chat, running on your own GPUs and runners.</p>
+review, security remediation, issue triage, MR descriptions and release notes, multi-agent flows and chat,
+running on your own GPUs and runners. Feedback on every agent's work and a metrics dashboard are built in.</p>
 
 ---
 
@@ -30,8 +31,9 @@ sandbox. Requirements and rationale: [`Self-Built GitLab DAP on Air-Gapped GitLa
 | `release-notes` | `@agent release-notes v1.2.0..v1.3.0` on an issue or MR | grouped release notes from the commits and MRs in the range |
 | `issue-triage` | issue opened (automatic, any author); `@agent triage` | suggested labels, likely duplicates, questions for the reporter |
 
-`@agent help` lists the agents and flows enabled for a project. Agents are YAML + prompt templates in
-[`agents/`](agents); see [docs/agents.md](docs/agents.md) to tune or add one.
+`@agent help` lists the agents and flows enabled for a project. Each agent runs only in projects that list it
+under `agents:` in `projects.yaml`. Agents are YAML + prompt templates in [`agents/`](agents); see
+[docs/agents.md](docs/agents.md) to tune or add one.
 
 ### Agentic tools
 
@@ -62,6 +64,37 @@ so it answers in seconds. It has only the read-only tools and cannot change anyt
 request, chat hands off: read-only agents such as a review start straight away. For agents and flows that
 change code, chat posts the exact command and a human confirms by sending it.
 
+### Security remediation
+
+`security-remediator` fixes what GitLab Ultimate's security scanners (SAST, dependency scanning, secret
+detection) report, at the root cause: it parameterises queries, moves secrets into configuration and upgrades
+vulnerable dependencies. It runs the project's tests like any edit agent, and the result goes through the same
+path checks.
+* **Where findings come from.** The pipeline's findings are read through GitLab GraphQL, with queries only and
+  mutations refused. On older instances it falls back to `gl-*-report.json` artifacts. On an MR, only findings in
+  the files the MR changes count.
+* **What counts.** Findings below `security_remediator.min_severity` (default `high`) are ignored, and so are those
+  listed in `.gitlab/agent-security-ignore.yml`. Humans maintain that file; it is always protected, so an agent
+  can never silence a finding instead of fixing it.
+* **When it runs.** `@agent remediate` on an MR commits the fix, or opens a follow-up MR on a human branch. The
+  `mr-secure` flow first runs `security-analyst` and passes its report on. With `security_remediator.auto: true`,
+  green pipelines on the default branch get a Draft MR labelled `agent::security-fix`. Automatic runs pause
+  while `max_open_mrs` such MRs are open, and no sandbox starts when there is nothing to fix.
+
+### Issue triage, MR descriptions and release notes
+
+These lightweight agents run **inside the orchestrator**, like chat. They answer in seconds and never touch code.
+* **`issue-triage`** runs on every new issue, including issues from Reporters, who usually lack Developer
+  access. It is capped at 20 runs per hour per project. It posts one comment with suggested labels (only labels
+  the project has, never `agent::*` trigger labels), likely duplicates it checked exist, and questions about
+  missing details. With `triage.apply_labels: true` it adds the labels as well.
+* **`mr-describer`** writes *What / Why / How to test / Risks* from the diff and the linked issues. The text goes
+  inside `<!-- outpost:description -->` markers: running it again replaces only that block, and the author's own
+  text is never changed. On MR open it runs only when the description is empty (`mr_describer.on_open`);
+  `@agent describe` always runs.
+* **`release-notes`** groups the commits and merge requests between two refs into Features, Fixes, Breaking
+  changes and Security, for example `@agent release-notes v1.2.0..v1.3.0`.
+
 ### Custom agents
 
 If the platform admin allows it for a project (`custom_agents` in `projects.yaml`), teams can add their own
@@ -77,12 +110,32 @@ Outpost records whether agent work helped:
 * agent MRs merged, or closed without merging
 * pipelines going green on agent branches
 
+Use these numbers to compare prompt, model and engine changes on real work.
+
 `/admin` is a server-rendered page with no JavaScript or CDN. It shows each agent's task counts, failures, MR
 acceptance rate, reactions, median duration and tool use, plus running flows, queue depth and recent tasks.
 `/metrics` serves the same numbers in Prometheus format. Both need the admin token: browsers use HTTP Basic
 with any user name and the token as the password, and Prometheus uses `Authorization: Bearer`. Failed or 👎
 tasks can be exported as [eval fixtures](docs/agents.md#turning-real-failures-into-fixtures), so real failures
-become regression tests.
+become regression tests:
+
+```bash
+python eval/export_task.py --url https://outpost.internal --token "$ADMIN_TOKEN" --task <task id> --name my-case
+# edit eval/fixtures/my-case/case.yaml: fill in `expect`, remove `draft: true`
+```
+
+### Operator API
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `POST /webhook` | webhook secret | GitLab events in |
+| `GET /admin` | admin token (HTTP Basic) | dashboard |
+| `GET /metrics` | admin token (Bearer) | Prometheus metrics |
+| `GET /api/tasks` | admin token | recent tasks as JSON |
+| `GET /api/tasks/{id}/fixture` | admin token | a task as an eval fixture (`.tar.gz`) |
+| `GET /healthz` | none | liveness and the loaded agents |
+
+The sandbox uses `/api/tasks/{id}/bundle`, `/result` and `/tools/{name}` with its short-lived ticket.
 
 ## How it works
 
@@ -104,12 +157,15 @@ GitLab ──webhook──► orchestrator (FastAPI + worker + Postgres)        
   approval rules keep humans in charge. On a human's MR branch, agents open a stacked follow-up MR instead of pushing.
 * **Untrusted input.** Issue text, comments and logs are wrapped as untrusted data in prompts. Model output is
   sanitised so it cannot run GitLab quick actions (`/merge`, `/approve`) or ping `@all`. Only users with Developer
-  access can trigger agents or approve flow gates. Bot-authored events are ignored, so agents cannot trigger each
-  other. Agents are chained only by flows, which the orchestrator runs explicitly (acyclic, at most 10 steps).
+  access can trigger agents or approve flow gates. The one exception is triggers marked `allow_any_author`, which
+  are limited to built-in read-only agents such as issue triage and are rate limited. Bot-authored events are
+  ignored, so agents cannot trigger each other. Agents are chained only by flows, which the orchestrator runs explicitly (acyclic, at most 10 steps).
 * **Loop limits.** Each agent has a cap on attempts and a wall-clock limit. The pipeline fixer stops after N fix attempts
   on its own branch. Every run ends with an MR or a comment saying what was tried.
 * **Focused context.** Collectors extract the failing part of job traces, the diff since the last green pipeline,
-  and similar slices, within a per-agent token budget (~30K by default).
+  scanner findings with the code around them, and similar slices, within a per-agent token budget (~30K by default).
+* **Measured, not assumed.** Reactions and outcomes (merged or closed MRs, green pipelines) are recorded for every
+  task. Each task also stores its context and tool results, so any run can be replayed offline as an eval case.
 
 ## Repository layout
 
@@ -134,12 +190,13 @@ GitLab ──webhook──► orchestrator (FastAPI + worker + Postgres)        
 ## Development
 
 ```bash
-cd orchestrator && pip install -e ../sandbox -e '.[dev]' && pytest   # router, tools, flows, chat, outputs vs fake GitLab
+cd orchestrator && pip install -e ../sandbox -e '.[dev]' && pytest   # router, tools, flows, inline agents, security, feedback, outputs vs fake GitLab
 cd sandbox && pip install -e '.[dev]' && pytest          # runner loop, change collection, tool loop (needs git + bash)
 ```
 
 ## What it does not do (vs. GitLab DAP)
 
 * There is no chat panel or IDE integration. Chat happens in issue and MR comment threads.
-* There are no GitLab-tuned prompts. Prompt quality is ours to own, so run `eval/` after every prompt, model or engine change.
+* There are no GitLab-tuned prompts. Prompt quality is ours to own, so run `eval/` after every prompt, model or engine
+  change, and export the failures the dashboard shows into new fixtures.
 * Issue-to-MR on non-trivial codebases is the hard part. Expect to spend most of the effort on evaluation, not plumbing.
