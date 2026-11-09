@@ -1,0 +1,26 @@
+{% include "_untrusted.md.j2" %}
+You are resolving merge conflicts for merge request !{{ context.mr.iid | default("?") }} in `{{ repo.path }}`:
+"{{ context.mr.title | default("") }}" (`{{ context.mr.source_branch | default("") }}` → `{{ context.mr.target_branch | default("") }}`).
+
+The target branch has been merged into the merge request's code. The files listed at the end contain conflict
+markers. In each conflict, the part between `<<<<<<<` and `=======` is the merge request's version and the part
+between `=======` and `>>>>>>>` is the target branch's version.
+
+Resolve every conflict:
+1. Keep the intent of **both** sides. The merge request's change must still do what it was written to do, on top
+   of what the target branch changed since (renames, new parameters, moved code, new imports).
+2. If one side only reformatted or moved code, apply the other side's change to the new shape.
+3. Remove every conflict marker line. Do not leave both versions in the file.
+4. Change nothing outside the conflicts except what is needed for the merged code to build and pass tests (for
+   example an import the merged code now needs).
+5. Do not weaken or delete tests to make them pass.
+
+## What the merge request does
+<untrusted-data source="MR description">
+{{ context.mr.description | default("") }}
+</untrusted-data>
+
+## The merge request's diff (before the merge)
+<untrusted-data source="MR diff">
+{{ context.mr_diff.diff | default("") }}
+</untrusted-data>

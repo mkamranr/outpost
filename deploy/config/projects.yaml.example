@@ -35,7 +35,7 @@ projects:
     test: ["pytest -q"]
     # All agents: enables chat and every flow (issue-to-mr, fix-and-review, mr-deep-review, mr-secure).
     agents: [chat, pipeline-fixer, planner, code-writer, code-reviewer, mr-assist, security-analyst, test-writer,
-             security-remediator, mr-describer, release-notes, issue-triage]
+             security-remediator, mr-describer, release-notes, issue-triage, conflict-resolver]
     triage:
       apply_labels: true
     protected_paths: [".gitlab/agent.yml", "deploy/", "migrations/"]

@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 import yaml
 
-from . import feedback, flows, inline, outputs, tickets, tools
+from . import conflicts, feedback, flows, inline, outputs, tickets, tools
 from .catalog import CatalogCache, RepoCatalog
 from .collectors import CollectContext, collect
 from .config import ProjectConfig, ProjectsConfig, Settings
@@ -263,6 +263,12 @@ class Platform:
             if not outputs.description_is_empty(current):
                 return None, cfg, "the merge request already has a description"
 
+        merge_target = None
+        if agent.output == "conflict_resolution":
+            handled, merge_target = conflicts.prepare(gl, cfg, t)
+            if handled:
+                return None, cfg, handled
+
         automatic = task.command is None and not task.flow_run_id
         if agent.output == "security_fix" and automatic:
             policy = cfg.security_remediator
@@ -307,7 +313,8 @@ class Platform:
                 "allow_ci_changes": agent.allow_ci_changes,
             },
             "prompts": prompts,
-            "repo": {"path": project["path_with_namespace"], "http_url": project["http_url_to_repo"], "ref": ref, "sha": sha},
+            "repo": {"path": project["path_with_namespace"], "http_url": project["http_url_to_repo"], "ref": ref, "sha": sha,
+                     **({"merge_target": merge_target} if merge_target else {})},
             "project": {"setup": cfg.setup, "test": cfg.test, "protected_paths": cfg.protected_paths},
             "context": context,
             "tools": tools.schemas(agent.tools),
@@ -324,6 +331,11 @@ class Platform:
         try:
             bundle, cfg, reason = self.build_bundle(task, agent, base_cfg)
             if bundle is None:
+                if isinstance(reason, conflicts.Handled):  # done without a sandbox: the reason is the answer
+                    self.store.update(task.id, status=DONE, outcome=str(reason)[:500])
+                    self._notify_failure(task, str(reason))
+                    self._finished(task.id)
+                    return
                 self.store.update(task.id, status=DONE, outcome=f"skipped: {reason}")
                 if task.command:  # a human asked explicitly; tell them why nothing happens
                     self._notify_failure(task, f"Not running `{agent.name}`: {reason}.")

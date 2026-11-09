@@ -49,6 +49,7 @@ class SandboxResult(BaseModel):
     comments: list[ReviewComment] = Field(default_factory=list)
     diff: str = ""
     error: str | None = None
+    conflicts: list[str] = Field(default_factory=list)  # conflict-resolver: files that had merge conflicts
 
 
 def create_app(platform: Platform) -> FastAPI:

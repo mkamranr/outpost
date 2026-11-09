@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import fnmatch
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,11 +50,7 @@ def authenticated_url(http_url: str, job_token: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
-def clone(http_url: str, sha: str, dest: Path, job_token: str | None, ref: str | None = None) -> None:
-    url = authenticated_url(http_url, job_token) if job_token else http_url
-    dest.mkdir(parents=True, exist_ok=True)
-    git(dest, "init", "-q")
-    git(dest, "remote", "add", "origin", url)
+def _fetch(dest: Path, sha: str, ref: str | None) -> None:
     try:
         git(dest, "fetch", "-q", "--depth", "50", "origin", sha)
     except RuntimeError:
@@ -61,6 +58,28 @@ def clone(http_url: str, sha: str, dest: Path, job_token: str | None, ref: str |
             raise
         # Servers that refuse fetching by SHA: fetch the branch and find the commit in its history.
         git(dest, "fetch", "-q", "--depth", "200", "origin", f"refs/heads/{ref}")
+
+
+def clone(http_url: str, sha: str, dest: Path, job_token: str | None, ref: str | None = None,
+          merge_sha: str | None = None, merge_ref: str | None = None) -> None:
+    """Check out `sha`. With `merge_sha`, also fetch that commit and enough history for a merge base."""
+    url = authenticated_url(http_url, job_token) if job_token else http_url
+    dest.mkdir(parents=True, exist_ok=True)
+    git(dest, "init", "-q")
+    git(dest, "remote", "add", "origin", url)
+    _fetch(dest, sha, ref)
+    if merge_sha:
+        _fetch(dest, merge_sha, merge_ref)
+        # A shallow history may stop short of the merge base: deepen while the credential is still set.
+        for _ in range(6):
+            if git(dest, "merge-base", sha, merge_sha, check=False).strip():
+                break
+            try:
+                git(dest, "fetch", "-q", "--deepen", "500", "origin", sha, merge_sha)
+            except RuntimeError:
+                refs = [f"refs/heads/{r}" for r in (ref, merge_ref) if r]
+                git(dest, "fetch", "-q", "--unshallow", "origin", *refs)
+                break
     git(dest, "checkout", "-q", "--detach", sha)
     git(dest, "config", "user.name", "agent")
     git(dest, "config", "user.email", "agent@sandbox.local")
@@ -88,6 +107,44 @@ def exclude_new_untracked(repo: Path, before: set[str]) -> list[str]:
     if new:
         exclude(repo, ["/" + p for p in new])
     return new
+
+
+def start_merge(repo: Path, sha: str) -> list[str]:
+    """Merge `sha` into the checkout without committing. Returns the files left with conflicts.
+
+    Afterwards the index is reset to HEAD, so the working tree holds the merged files (conflict markers and
+    all) as ordinary changes that the edit engines and collect_changes() understand.
+    """
+    proc = subprocess.run(["git", "merge", "--no-commit", "--no-ff", sha], cwd=repo, capture_output=True, text=True,
+                          errors="replace")
+    in_merge = subprocess.run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=repo,
+                              capture_output=True).returncode == 0
+    if proc.returncode != 0 and not in_merge:
+        raise RuntimeError(f"git merge failed: {(proc.stderr or proc.stdout).strip()[:1000]}")
+    conflicted = [p for p in git(repo, "diff", "--name-only", "--diff-filter=U", "-z").split("\0") if p]
+    git(repo, "reset", "-q")
+    return conflicted
+
+
+_MARKER = re.compile(r"^(<{7}|>{7})(?: |$)", re.MULTILINE)
+
+
+def conflict_markers(repo: Path, paths: list[str]) -> list[str]:
+    """The files among `paths` that still contain a `<<<<<<<` or `>>>>>>>` marker line."""
+    left = []
+    for path in paths:
+        file = repo / path
+        if file.is_file() and _MARKER.search(file.read_text(encoding="utf-8", errors="replace")):
+            left.append(path)
+    return left
+
+
+def changed_paths(repo: Path, base: str) -> list[str]:
+    """Paths whose working-tree content differs from `base`."""
+    git(repo, "add", "-A")
+    out = git(repo, "diff", "--cached", "--name-only", "--no-renames", "-z", base)
+    git(repo, "reset", "-q")
+    return [p for p in out.split("\0") if p]
 
 
 def has_changes(repo: Path) -> bool:

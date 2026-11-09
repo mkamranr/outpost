@@ -55,7 +55,7 @@ class AgentDef(BaseModel):
     # inline: runs inside the orchestrator with GitLab tools only (no sandbox, no checkout); built-in agents only.
     engine: Literal["aider", "mini-swe", "llm", "inline"]
     output: Literal["pipeline_fix", "merge_request", "note", "review", "mr_commit", "chat", "mr_description", "triage",
-                    "security_fix"]
+                    "security_fix", "conflict_resolution"]
     triggers: list[Trigger]
     prompts: dict[str, str]  # role -> template file in agents/prompts
     context: list[str] = Field(default_factory=list)  # collector names
@@ -97,7 +97,7 @@ class AgentDef(BaseModel):
 RESERVED_COMMANDS = {"help", "chat", "approve", "stop"}
 APPROVAL_LABEL = "agent::approved"
 MAX_FLOW_STEPS = 10
-MR_OUTPUTS = {"merge_request", "mr_commit", "pipeline_fix", "security_fix"}  # outputs that leave an MR behind for the next step
+MR_OUTPUTS = {"merge_request", "mr_commit", "pipeline_fix", "security_fix", "conflict_resolution"}  # outputs that leave an MR behind for the next step
 CUSTOM_CONTEXT = {"issue", "issue_notes", "mr", "mr_diff", "discussion"}  # collectors safe for any trigger target
 
 

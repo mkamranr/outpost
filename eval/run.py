@@ -51,7 +51,30 @@ def prepare_repo(src: Path, dest: Path) -> str:
     return git(dest, "rev-parse", "HEAD")
 
 
-def build_bundle(registry: Registry, case: dict, name: str, sha: str) -> dict:
+def _overlay(src: Path, dest: Path) -> None:
+    for path in src.rglob("*"):
+        if path.is_file():
+            target = dest / path.relative_to(src)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+
+
+def prepare_merge_repo(fixture: Path, dest: Path) -> tuple[str, str]:
+    """Conflict cases: repo/ is the merge base, source/ and target/ are overlays committed on two branches.
+    Returns (source sha, target sha), with the source checked out."""
+    base = prepare_repo(fixture / "repo", dest)
+    _overlay(fixture / "target", dest)
+    git(dest, "add", "-A")
+    git(dest, "-c", "user.name=eval", "-c", "user.email=eval@local", "commit", "-qm", "target")
+    target = git(dest, "rev-parse", "HEAD")
+    git(dest, "checkout", "-q", "--detach", base)
+    _overlay(fixture / "source", dest)
+    git(dest, "add", "-A")
+    git(dest, "-c", "user.name=eval", "-c", "user.email=eval@local", "commit", "-qm", "source")
+    return git(dest, "rev-parse", "HEAD"), target
+
+
+def build_bundle(registry: Registry, case: dict, name: str, sha: str, merge_sha: str | None = None) -> dict:
     agent = registry.get(case["agent"])
     protected = case.get("protected_paths", [".gitlab/agent.yml"])
     variables = {
@@ -70,7 +93,8 @@ def build_bundle(registry: Registry, case: dict, name: str, sha: str) -> dict:
                   "output": agent.output, "classify": agent.classify, "max_attempts": agent.max_attempts,
                   "timeout_minutes": agent.timeout_minutes, "allow_ci_changes": agent.allow_ci_changes},
         "prompts": {role: registry.render(agent, role, variables) for role in agent.prompts},
-        "repo": {"path": f"eval/{name}", "http_url": "", "ref": "main", "sha": sha},
+        "repo": {"path": f"eval/{name}", "http_url": "", "ref": "main", "sha": sha,
+                 **({"merge_target": {"ref": "main", "sha": merge_sha}} if merge_sha else {})},
         "project": {"setup": case.get("setup", []), "test": case.get("test", []), "protected_paths": protected},
         "context": case.get("context", {}),
         "tools": schemas(agent.tools),
@@ -108,6 +132,9 @@ def score(case: dict, result: dict, repo: Path) -> dict:
         checks["labels"] = set(expect["labels"]) <= set(triage.get("labels") or [])
     if "duplicate_of" in expect:
         checks["duplicate_of"] = any(d.get("iid") == expect["duplicate_of"] for d in triage.get("duplicates") or [])
+    if expect.get("no_conflict_markers"):
+        checks["no_conflict_markers"] = (bool(result.get("conflicts"))
+                                         and not git_repo.conflict_markers(repo, result.get("conflicts") or []))
     if "tools_used" in expect:
         checks["tools_used"] = set(expect["tools_used"]) <= set(result.get("tools_used") or [])
     return checks
@@ -141,8 +168,12 @@ def main() -> int:
         work = args.out / fixture.name
         work.mkdir()
         repo = work / "repo"
-        sha = prepare_repo(fixture / "repo", repo) if (fixture / "repo").is_dir() else "0" * 40
-        bundle = build_bundle(registry, case, fixture.name, sha)
+        merge_sha = None
+        if (fixture / "source").is_dir() and (fixture / "target").is_dir():
+            sha, merge_sha = prepare_merge_repo(fixture, repo)
+        else:
+            sha = prepare_repo(fixture / "repo", repo) if (fixture / "repo").is_dir() else "0" * 40
+        bundle = build_bundle(registry, case, fixture.name, sha, merge_sha)
         (work / "bundle.json").write_text(json.dumps(bundle, indent=2), encoding="utf-8")
         print(f"== {fixture.name} ({case['agent']}): {case.get('description', '')}", flush=True)
         started = time.time()

@@ -1,0 +1,17 @@
+name: conflict-resolver
+description: Brings a merge request up to date with its target branch. With no conflicts it asks GitLab to rebase; with conflicts it resolves them, runs the tests and opens a replacement Draft MR.
+phase: 3
+mode: edit
+engine: aider
+output: conflict_resolution
+max_attempts: 3
+timeout_minutes: 30
+context_budget_tokens: 24000
+context: [mr, mr_diff]
+tools: []
+prompts:
+  main: conflict-resolver.md.j2
+triggers:
+  - event: note
+    commands: [rebase, resolve-conflicts]
+    targets: [merge_request]
