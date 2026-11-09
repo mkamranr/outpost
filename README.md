@@ -12,7 +12,7 @@ running on your own GPUs and runners. Feedback on every agent's work and a metri
 
 A self-hosted alternative to GitLab Duo Agent Platform for an air-gapped GitLab Ultimate instance. It uses
 only standard GitLab APIs, an OpenAI-compatible vLLM endpoint (e.g. Qwen3.8-27B) and GitLab runners as the
-sandbox. Requirements and rationale: [`Self-Built GitLab DAP on Air-Gapped GitLab.md`](Self-Built%20GitLab%20DAP%20on%20Air-Gapped%20GitLab.md).
+sandbox.
 
 ## Agents
 

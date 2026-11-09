@@ -10,3 +10,5 @@ deploy/secrets/*
 !deploy/secrets/README.md
 eval/out/
 eval/fixtures/.incoming/
+# Internal design memo, kept locally only
+Self-Built GitLab DAP on Air-Gapped GitLab.md
