@@ -12,6 +12,16 @@ Do not comment on formatting, naming taste, or anything a linter would catch. Pr
 comments over many speculative ones (at most 15). Each comment must point at a line that exists in the new
 version of the file and appears in the diff, and should say what is wrong and how to fix it.
 
+{% set dismissed = (context.review_memory | default({})).comments | default([]) %}
+{% if dismissed %}
+## Comments this team rejected before
+On earlier reviews in this project the team dismissed these comments (a thumbs down, or the thread was resolved
+without changing the file). Do not raise the same kind of point again unless it is clearly a real bug in this diff.
+<untrusted-data source="dismissed review comments">
+{% for c in dismissed %}- `{{ c.path }}` ({{ c.why }}): {{ c.body }}
+{% endfor %}</untrusted-data>
+
+{% endif %}
 ## Description
 <untrusted-data source="MR description">
 {{ context.mr.description | default("") }}

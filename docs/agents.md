@@ -86,6 +86,7 @@ Loading also rejects:
 | `mr` / `mr_diff` | MR metadata and diff |
 | `discussion` | The thread a command came from, including the file and line it is attached to |
 | `subject` | Summary of the issue, MR (with head pipeline) or commit a comment is on, for chat |
+| `review_memory` | Up to 20 of this agent's earlier inline comments in the project that the team dismissed (👎, or the thread resolved without the file changing). Fixed budget of 1500 tokens |
 | `linked_issues` | Issues an MR refers to (`#12` in its description, or a `12-…` source branch) |
 | `project_labels` | The project's labels and descriptions, without `agent::*` trigger labels |
 | `ref_range` | Commits and referenced MRs between two refs taken from the instruction (`v1.2.0..v1.3.0`) |
@@ -106,7 +107,9 @@ for optional fields. Wrap anything users or logs wrote in
 `<untrusted-data source="…">` and include `_untrusted.md.j2` at the top.
 
 To add a collector, write a function decorated with `@collector("name")` that returns JSON-serialisable data
-within `ctx.budget_tokens` (use `truncate()`). Import its module in `collectors/__init__.py`. A collector gets
+within `ctx.budget_tokens` (use `truncate()`). Import its module in `collectors/__init__.py`.
+`@collector("name", budget=N)` gives a small collector a fixed budget, taken off the top, so it doesn't shrink the
+others' even split. A collector gets
 `ctx.target`, `ctx.project`, `ctx.sha` / `ctx.ref` and `ctx.instruction` (`ref_range`, for example, reads its range
 from it). A collector that raises is recorded as `{"error": …}` and the agent still runs.
 
@@ -347,6 +350,23 @@ The dashboard (`/admin`) and `/metrics` show, per agent:
 
 After changing a prompt, model or engine, compare these for a week or two against the period before, next to
 the offline eval pass rate. A rise in 👎 or closed MRs is the cue to export those tasks as fixtures.
+
+### Review memory
+
+Every inline comment a review agent posts is recorded with its file, line and the MR head it was made on. The
+feedback poller then marks a comment **dismissed** when either:
+* it has at least one 👎, and no more 👍 than 👎, or
+* its thread was resolved while the commented file stayed the same between that head and the MR's current head.
+
+The next review in the project gets those comments through the `review_memory` collector (it's on
+`code-reviewer` by default), with the instruction not to raise the same kind of point again unless it's clearly
+a real bug. Teams teach the reviewer just by reacting and resolving, as they already do.
+
+The heuristic can be wrong: a thread resolved with "will fix later" also counts. `GET
+/api/review-memory?project_id=<id>` lists what a project's reviewer is told to avoid. `DELETE
+/api/review-memory/<id>` forgets one entry. Both need the admin token. `/admin` shows dismissed / posted
+comments, and `/metrics` has `outpost_review_comments{agent,state="posted|dismissed"}`. A dismissal rate that
+keeps rising is a sign the review prompt needs work.
 
 ### Turning real failures into fixtures
 

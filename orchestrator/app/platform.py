@@ -273,7 +273,7 @@ class Platform:
         context = collect(agent.context, CollectContext(
             gl=gl, target=t, project=cfg, sha=sha, ref=ref,
             budget_tokens=agent.context_budget_tokens, bot_username=self.settings.bot_username,
-            instruction=task.instruction,
+            instruction=task.instruction, store=self.store, agent=agent.name,
         ))
         vulns = context.get("vulnerabilities")
         if agent.output == "security_fix" and not task.flow_run_id and isinstance(vulns, dict) \
@@ -405,7 +405,8 @@ class Platform:
             self.store.update(task.id, status=DONE, outcome=outcome[:500], produced=ctx.produced)
             try:
                 self.store.add_links(task, feedback.links_for(ctx))
-            except Exception:  # noqa: BLE001 - links only feed metrics
+                self.store.add_review_comments(task, ctx.review_comments)
+            except Exception:  # noqa: BLE001 - links only feed metrics and review memory
                 log.exception("recording links for task %s failed", task.id)
             log.info("task %s (%s) done: %s", task.id, agent.name, outcome)
         except Exception as exc:  # noqa: BLE001
