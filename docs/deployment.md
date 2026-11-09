@@ -4,9 +4,11 @@ You need:
 * GitLab Ultimate, reachable from the orchestrator host and the runner host
 * a Docker host for the orchestrator
 * a Docker host for the `agent-sandbox` runner (can be the same machine for a pilot)
-* vLLM serving the model with tool calling enabled, reachable from the runner host and, for chat, from the
-  orchestrator host
+* vLLM serving the model with tool calling enabled, reachable from the runner host and, for the inline agents
+  (`chat`, `issue-triage`, `mr-describer`, `release-notes`), from the orchestrator host
 * an internal container registry
+* for `security-remediator`: GitLab Ultimate security scanners (SAST, dependency scanning, secret detection) in
+  the projects' pipelines, with their analyzer images mirrored to the internal registry
 
 ## 0. Build and transfer (internet side)
 
@@ -60,6 +62,8 @@ in the agent layer, or set `AGENT_AIDER_EDIT_FORMAT` as a sandbox CI variable.
 4. Optional: if a project's work must appear under a named engineer, save that engineer's PAT
    (scopes `api`, or `read_api` + `write_repository`, with an expiry) as another secret file. Reference it with
    `token_ref` in `projects.yaml`.
+   The `api` scope also covers the GraphQL queries `security-remediator` uses to read scanner findings. It
+   only reads through GraphQL and refuses mutations.
 5. On each target project, protect `main` and require MR approval. Agents then cannot merge alone, and agent
    branches stay unprotected, so protected CI variables never reach sandbox jobs.
 
@@ -83,6 +87,42 @@ the task ticket).
 many conversations run at once. They don't use sandbox slots. Chat can only read GitLab through the bot's
 token, and every write it makes is its reply.
 
+**Inline agents.** `issue-triage`, `mr-describer` and `release-notes` run in the worker the same way chat does,
+share `CHAT_WORKERS`, and need the same `LLM_*` settings. Enable them per project in `agents:` and tune them in
+`projects.yaml`:
+
+```yaml
+  mr_describer:
+    on_open: only_if_empty      # or `always`; `@agent describe` always writes
+  triage:
+    apply_labels: false         # true: add the suggested labels instead of only suggesting them
+```
+
+`issue-triage` runs for every new issue, including issues from authors without Developer access. It is limited
+to 20 runs per project per hour (`max_per_hour` in `agents/issue-triage.yaml`).
+
+**Security remediator.** Add `security-remediator` to a project's `agents:` for `@agent remediate` and the
+`mr-secure` flow. Automatic runs after green default-branch pipelines are off until you enable them:
+
+```yaml
+  security_remediator:
+    auto: true
+    branches: ["main"]
+    min_severity: high          # critical | high | medium | low
+    max_open_mrs: 2             # pause automatic runs while this many agent::security-fix MRs are open
+```
+
+Teams list accepted risks and false positives in `.gitlab/agent-security-ignore.yml` on the default branch (finding
+ids or identifiers such as `CVE-…`/`CWE-…`, optionally `{id: …, reason: …}`). Agents can never change that file.
+
+**Feedback and eval export** (optional, in `.env`):
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `FEEDBACK_POLL_SECONDS` | 300 | How often the worker reads 👍/👎 on agent notes and MRs (0 turns polling off) |
+| `FEEDBACK_WINDOW_DAYS` | 14 | How long after a task its reactions are still read |
+| `FIXTURE_MAX_REPO_MB` | 20 | Fixture exports include the whole repository up to this size, otherwise only the files the task touched |
+
 **Flows** need no configuration. A flow is offered wherever all of its agents are enabled; `@agent help` lists
 them. **Custom agents** stay off until you set `custom_agents.enabled: true` for a project in `projects.yaml`
 (see [agents.md](agents.md#custom-agents-gitlabagents)).
@@ -105,8 +145,10 @@ The script is idempotent. It sets up:
 * **Each target project:**
   * the webhook (pipeline, note, issue and MR events)
   * the sandbox added to the target's CI job-token allowlist, so jobs can clone it read-only
-  * the `agent::*` labels
+  * the `agent::*` labels, including `agent::security-fix`
   * Developer membership for the bot
+
+Re-run it after upgrading to create labels that new releases add.
 
 ## 5. Sandbox runner
 
@@ -136,7 +178,9 @@ curl -s localhost:8080/healthz          # {"ok": true, "agents": [...]}
 docker compose logs -f orchestrator-worker
 ```
 
-Put a TLS reverse proxy in front if GitLab requires HTTPS webhooks. `GET /api/tasks` with header
+Put a TLS reverse proxy in front if GitLab requires HTTPS webhooks. Because `/admin` uses HTTP Basic with the
+admin token, serve it over HTTPS only. Ideally, expose `/admin`, `/metrics` and `/api/tasks` only on the operations
+network. GitLab needs only `/webhook`, and sandbox jobs need only `/api/tasks/<id>/…`. `GET /api/tasks` with header
 `X-Admin-Token: $(cat secrets/admin_token)` lists recent tasks, their status, outcome and sandbox pipeline.
 
 **Dashboard and metrics.** Open `http://<orchestrator>:8080/admin` and log in with any user name and the admin
@@ -176,12 +220,27 @@ of `outpost_feedback{kind="mr_merged"}` to `outpost_feedback{kind="mr_closed"}` 
    * `security-remediator`: needs GitLab Ultimate security scanners in the pipeline. Comment `@agent remediate`
      on an MR whose pipeline has SAST findings in the files it changes. Automatic runs on the default branch
      stay off until you set `security_remediator.auto: true`.
-8. Run the offline evaluation and keep its report as your baseline:
+8. Open `/admin`: the pilot's tasks are listed. React 👎 on one of the agent's comments, and within
+   `FEEDBACK_POLL_SECONDS` the dashboard counts it. Its **Export fixture** link downloads it as an eval case.
+9. Run the offline evaluation and keep its report as your baseline:
 
 ```bash
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" -w /w -e AGENT_LLM_BASE_URL=http://vllm.internal:8000/v1 -e AGENT_LLM_MODEL=qwen3.8-27b \
   registry.internal/agent-platform/sandbox-python:<ver> agent-python eval/run.py
 ```
+
+## Upgrading
+
+1. Build and transfer the new bundle as in step 0, push the images, and set `VERSION` in `.env`.
+2. If you mount your own `agents/` directory, copy in the new agent YAML files and prompt templates. The
+   orchestrator refuses to start when a template is missing.
+3. Merge new settings from `.env.example` and `config/projects.yaml.example` into your copies.
+4. Restart: `docker compose up -d`. Both the API and the worker update the database schema on start-up. They create
+   new tables (such as task links and feedback) and add new nullable columns, so no manual migration is needed.
+5. Re-run `deploy/setup/bootstrap.py` for each project to add new labels.
+
+Feedback starts at the upgrade: tasks finished before it have no links, so their reactions are not counted. Tasks
+from before the tool-call log existed export without `tool_responses`.
 
 ## Troubleshooting
 
@@ -196,6 +255,12 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" -w /w -e AGENT_
 | Aider makes no edits | Try `AGENT_AIDER_EDIT_FORMAT=whole` (sandbox CI variable). Check that vLLM's `--max-model-len` covers the prompt. |
 | `@agent <question>` says "I don't know the command" | Add `chat` to the project's `agents:`. |
 | `security-remediator` says "no security findings" | The MR's head pipeline must run the scanners, and on an MR only findings in the changed files count. Older GitLab versions without `securityReportFindings` in GraphQL need the scanner jobs to also keep `gl-*-report.json` under `artifacts:paths`. |
+| A new issue gets no triage comment | Add `issue-triage` to `agents:`. The webhook needs issue events (bootstrap enables them). The worker log shows `hourly limit` when `max_per_hour` was reached. |
+| `mr-describer` does nothing on MR open | By default it only writes when the description is (nearly) empty; the task outcome says `skipped: … already has a description`. Use `@agent describe`, or set `mr_describer.on_open: always`. |
+| `release-notes` asks for a range | Give two refs that exist in the project: `@agent release-notes v1.2.0..v1.3.0` (or one ref, up to the default branch). |
+| Security fixes stop appearing automatically | `max_open_mrs` open MRs labelled `agent::security-fix`: merge or close them. The task outcome says `… security fix MRs are already open`. |
+| Fixture export returns 409 | The task was skipped before it collected context, so there is nothing to replay. |
+| `/admin` or `/metrics` returns 401 | `ADMIN_TOKEN_FILE` must be set (compose sets it) and the token sent as the HTTP Basic password or `Authorization: Bearer`. |
 | No 👍/👎 on the dashboard | Reactions are polled every `FEEDBACK_POLL_SECONDS` (300) for `FEEDBACK_WINDOW_DAYS` (14). Only notes and MRs posted after this release are linked. |
 | Chat replies "I could not answer that" | Worker log. `LLM_BASE_URL`/`LLM_MODEL` unset, or vLLM is unreachable from the orchestrator host. |
 | A flow is missing from `@agent help` | Every agent in the flow must be enabled for the project. |
