@@ -8,3 +8,5 @@ test:
 protected_paths:
   - migrations/
 agents: [pipeline-fixer, code-reviewer, mr-assist]   # opt out of the others
+# Security findings the security-remediator should skip live in a separate file:
+# .gitlab/agent-security-ignore.yml (see agent-security-ignore.yml next to this example).
