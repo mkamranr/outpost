@@ -33,3 +33,12 @@ def issue_notes(ctx: CollectContext) -> dict[str, Any]:
         "plan": truncate(plan, plan_budget, keep="head") if plan else None,
         "discussion": truncate(discussion, ctx.budget_tokens - plan_budget, keep="tail"),
     }
+
+
+@collector("project_labels")
+def project_labels(ctx: CollectContext) -> list[dict[str, str]]:
+    """The labels that exist in the project, so triage only suggests real ones. Agent trigger labels are left out."""
+    labels = ctx.gl.labels(ctx.target["project_id"])
+    out = [{"name": l["name"], "description": (l.get("description") or "")[:200]}
+           for l in labels if not str(l.get("name", "")).startswith("agent::")]
+    return out[:200]

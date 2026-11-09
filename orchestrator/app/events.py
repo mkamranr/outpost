@@ -30,6 +30,7 @@ class Event:
     added_labels: list[str] = field(default_factory=list)
     failed_job_ids: list[int] = field(default_factory=list)
     has_new_commits: bool = False  # MR "update" events that carry a push (oldrev set)
+    commit_message: str | None = None  # pipeline events: names the agent task that made the commit
 
     def target(self) -> dict[str, Any]:
         """The serialisable subset stored on the task and used by collectors and outputs."""
@@ -87,6 +88,7 @@ def parse(event_header: str, payload: dict[str, Any]) -> Event | None:
             iid=mr.get("iid"),
             noteable_type="merge_request" if mr.get("iid") else "commit",
             failed_job_ids=failed,
+            commit_message=(payload.get("commit") or {}).get("message"),
             **base,
         )
 

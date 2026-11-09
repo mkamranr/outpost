@@ -139,6 +139,21 @@ docker compose logs -f orchestrator-worker
 Put a TLS reverse proxy in front if GitLab requires HTTPS webhooks. `GET /api/tasks` with header
 `X-Admin-Token: $(cat secrets/admin_token)` lists recent tasks, their status, outcome and sandbox pipeline.
 
+**Dashboard and metrics.** Open `http://<orchestrator>:8080/admin` and log in with any user name and the admin
+token as the password. It shows each agent's tasks, failures, MR acceptance rate and 👍/👎. Have Prometheus
+scrape the same numbers:
+
+```yaml
+scrape_configs:
+  - job_name: outpost
+    metrics_path: /metrics
+    authorization: {type: Bearer, credentials_file: /etc/prometheus/outpost_admin_token}
+    static_configs: [{targets: ["agent-orchestrator.internal:8080"]}]
+```
+
+Useful alerts: `outpost_queue_depth{lane="sandbox"}` staying above `MAX_CONCURRENT_SANDBOXES`, and a falling ratio
+of `outpost_feedback{kind="mr_merged"}` to `outpost_feedback{kind="mr_closed"}` after a prompt or model change.
+
 ## 7. Pilot
 
 1. On a pilot project with `test` configured, push a commit that breaks a unit test.
@@ -154,7 +169,14 @@ Put a TLS reverse proxy in front if GitLab requires HTTPS webhooks. `GET /api/ta
    `code-reviewer`.
 6. On a small issue, comment `@agent build`. A checklist comment tracks the `issue-to-mr` flow. After the plan
    is posted, reply `@agent approve`. A Draft MR follows, and then a review of that MR.
-7. Run the offline evaluation and keep its report as your baseline:
+7. Optional agents. Each one must be added to the project's `agents:` list:
+   * `issue-triage`: open an issue as a Reporter, and a triage comment appears.
+   * `mr-describer`: open an MR with an empty description, and a description block appears.
+   * `release-notes`: comment `@agent release-notes <previous tag>..main`.
+   * `security-remediator`: needs GitLab Ultimate security scanners in the pipeline. Comment `@agent remediate`
+     on an MR whose pipeline has SAST findings in the files it changes. Automatic runs on the default branch
+     stay off until you set `security_remediator.auto: true`.
+8. Run the offline evaluation and keep its report as your baseline:
 
 ```bash
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" -w /w -e AGENT_LLM_BASE_URL=http://vllm.internal:8000/v1 -e AGENT_LLM_MODEL=qwen3.8-27b \
@@ -173,6 +195,8 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" -w /w -e AGENT_
 | "did not finish: timed out" | Raise the agent's `timeout_minutes`, or lower concurrency so vLLM is not queueing. |
 | Aider makes no edits | Try `AGENT_AIDER_EDIT_FORMAT=whole` (sandbox CI variable). Check that vLLM's `--max-model-len` covers the prompt. |
 | `@agent <question>` says "I don't know the command" | Add `chat` to the project's `agents:`. |
+| `security-remediator` says "no security findings" | The MR's head pipeline must run the scanners, and on an MR only findings in the changed files count. Older GitLab versions without `securityReportFindings` in GraphQL need the scanner jobs to also keep `gl-*-report.json` under `artifacts:paths`. |
+| No 👍/👎 on the dashboard | Reactions are polled every `FEEDBACK_POLL_SECONDS` (300) for `FEEDBACK_WINDOW_DAYS` (14). Only notes and MRs posted after this release are linked. |
 | Chat replies "I could not answer that" | Worker log. `LLM_BASE_URL`/`LLM_MODEL` unset, or vLLM is unreachable from the orchestrator host. |
 | A flow is missing from `@agent help` | Every agent in the flow must be enabled for the project. |
 | A flow stays at "waiting for approval" | Approve with `@agent approve` (Developer access) or the `agent::approved` label on the same issue/MR. |

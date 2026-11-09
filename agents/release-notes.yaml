@@ -1,0 +1,17 @@
+name: release-notes
+description: Drafts release notes for a ref range (`release-notes v1.2.0..v1.3.0`) from the commits and merge requests in it.
+phase: 5
+mode: readonly
+engine: inline
+output: note
+max_attempts: 1
+timeout_minutes: 5
+context_budget_tokens: 24000
+context: [ref_range]
+tools: [get_merge_request, search_merge_requests, get_issue]
+prompts:
+  main: release-notes.md.j2
+triggers:
+  - event: note
+    commands: [release-notes]
+    targets: [issue, merge_request]

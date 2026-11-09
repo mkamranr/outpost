@@ -5,11 +5,11 @@ import hmac
 import logging
 from typing import Any, Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
-from . import events, tickets
+from . import dashboard, events, fixtures, tickets
 from .platform import Platform
 
 log = logging.getLogger("orchestrator.api")
@@ -54,6 +54,7 @@ class SandboxResult(BaseModel):
 def create_app(platform: Platform) -> FastAPI:
     app = FastAPI(title="Agent Platform Orchestrator", docs_url=None, redoc_url=None)
     settings = platform.settings
+    require_admin = dashboard.admin_checker(settings.admin_token)
 
     def ticket_for(task_id: str, authorization: str = Header(default="")) -> str:
         token = authorization.removeprefix("Bearer ").strip()
@@ -118,9 +119,7 @@ def create_app(platform: Platform) -> FastAPI:
         return {"content": content}
 
     @app.get("/api/tasks")
-    def list_tasks(x_admin_token: str = Header(default=""), limit: int = 100) -> list[dict[str, Any]]:
-        if not settings.admin_token or not hmac.compare_digest(x_admin_token, settings.admin_token):
-            raise HTTPException(status_code=401, detail="admin token required")
+    def list_tasks(limit: int = 100, _: None = Depends(require_admin)) -> list[dict[str, Any]]:
         return [
             {
                 "id": t.id, "agent": t.agent, "project": t.project_path, "status": t.status,
@@ -131,6 +130,22 @@ def create_app(platform: Platform) -> FastAPI:
             for t in platform.store.recent(min(limit, 500))
         ]
 
+    @app.get("/api/tasks/{task_id}/fixture")
+    def export_fixture(task_id: str, name: str = "", _: None = Depends(require_admin)) -> Response:
+        """Download a finished task as an eval fixture (tar.gz of <name>/case.yaml and <name>/repo/)."""
+        task = platform.store.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="no such task")
+        fixture = fixtures.fixture_name(task, name or None)
+        try:
+            data, info = fixtures.export_archive(platform, task, fixture)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        return Response(data, media_type="application/gzip", headers={
+            "Content-Disposition": f'attachment; filename="{fixture}.tar.gz"',
+            "X-Fixture-Repo": info["repo"], "X-Fixture-Files": str(info["files"])})
+
+    dashboard.register(app, platform)
     return app
 
 

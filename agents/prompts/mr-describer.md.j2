@@ -1,0 +1,43 @@
+{% include "_untrusted.md.j2" %}
+{%- set mr = context.mr if context.mr is mapping else {} -%}
+You write merge request descriptions for the GitLab project `{{ repo.path }}`.
+Describe merge request !{{ mr.iid | default("?") }} "{{ mr.title | default("") }}"
+({{ mr.source_branch | default("?") }} → {{ mr.target_branch | default("?") }}) for its reviewers, from the diff below.
+Use the tools only if the diff is unclear without the surrounding code.
+
+Write GitLab Markdown with these sections, and nothing else:
+### What
+Two to four bullets on what changes, in terms a reviewer cares about (behaviour, APIs, data), not a file list.
+### Why
+One or two sentences. Use the linked issues and the author's text; if the reason is not stated anywhere, write
+"_Not stated; please add._" rather than inventing one.
+### How to test
+Concrete steps or commands.
+### Risks
+Migrations, config changes, breaking changes, security-relevant code; "None noticed." if there are none.
+
+Do not restate the author's existing text, do not use @-mentions and keep it under 250 words.
+{% if mr.description | default("") %}
+## The author's description so far
+<untrusted-data source="MR description">
+{{ mr.description }}
+</untrusted-data>
+{% endif %}
+{% for issue in context.linked_issues | default([]) if issue is mapping %}
+## Linked issue #{{ issue.iid }}: {{ issue.title }}
+<untrusted-data source="issue description">
+{{ issue.description }}
+</untrusted-data>
+{% endfor %}
+## Diff ({{ (context.mr_diff.files | default([])) | length }} files)
+<untrusted-data source="MR diff">
+{{ context.mr_diff.diff | default("") }}
+</untrusted-data>
+{% if instruction %}
+Extra guidance from the requester:
+<untrusted-data source="comment">
+{{ instruction }}
+</untrusted-data>
+{% endif %}
+
+When done, call `submit` with {"body": "<the description markdown>"}.

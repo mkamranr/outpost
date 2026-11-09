@@ -7,7 +7,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Collection
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, false, func, inspect, select, text, update
+from sqlalchemy import (DateTime, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, false, func,
+                        inspect, select, text, update)
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -61,6 +62,7 @@ class Task(Base):
     flow_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     flow_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     produced_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # what the output handler created
+    tool_log_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # tool calls and results, for eval export
 
     @property
     def target(self) -> dict[str, Any]:
@@ -73,6 +75,10 @@ class Task(Base):
     @property
     def bundle(self) -> dict[str, Any] | None:
         return json.loads(self.bundle_json) if self.bundle_json else None
+
+    @property
+    def tool_log(self) -> list[dict[str, Any]]:
+        return json.loads(self.tool_log_json) if self.tool_log_json else []
 
     @property
     def result(self) -> dict[str, Any] | None:
@@ -102,6 +108,46 @@ class FlowRun(Base):
     @property
     def target(self) -> dict[str, Any]:
         return json.loads(self.target_json)
+
+
+class TaskLink(Base):
+    """A GitLab object (an MR or a note) that a task created, so reactions and outcomes can find the task."""
+
+    __tablename__ = "task_links"
+    __table_args__ = (Index("ix_task_links_ref", "project_id", "kind", "ref_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[int] = mapped_column(Integer)
+    project_path: Mapped[str] = mapped_column(String(255))
+    kind: Mapped[str] = mapped_column(String(16))  # mr | note
+    ref_id: Mapped[int] = mapped_column(Integer)  # MR iid, or note id
+    noteable_type: Mapped[str | None] = mapped_column(String(32), nullable=True)  # for notes: issue | merge_request
+    noteable_iid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+# Feedback kinds. Reactions come from people; outcomes from what happened to the agent's work.
+THUMBS_UP = "thumbs_up"
+THUMBS_DOWN = "thumbs_down"
+MR_MERGED = "mr_merged"
+MR_CLOSED = "mr_closed"
+PIPELINE_GREEN = "pipeline_green"
+REACTIONS = (THUMBS_UP, THUMBS_DOWN)
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+    __table_args__ = (UniqueConstraint("task_id", "kind", "actor", name="uq_feedback_once"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent: Mapped[str] = mapped_column(String(64), index=True)
+    project_id: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32))
+    actor: Mapped[str] = mapped_column(String(255), default="")  # "" for outcomes
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class TaskStore:
@@ -202,6 +248,11 @@ class TaskStore:
                 t.status = DISPATCHING
             return tasks
 
+    def count_since(self, agent: str, project_id: int, since: datetime) -> int:
+        with self.Session() as s:
+            return s.scalar(select(func.count()).select_from(Task).where(
+                Task.agent == agent, Task.project_id == project_id, Task.created_at >= since)) or 0
+
     def list_by_status(self, *statuses: str) -> list[Task]:
         with self.Session() as s:
             return list(s.scalars(select(Task).where(Task.status.in_(statuses)).order_by(Task.created_at)))
@@ -228,6 +279,19 @@ class TaskStore:
             res = s.execute(update(Task).where(Task.id == task_id, Task.status == DISPATCHED, used < cap)
                             .values(tool_calls=used + 1))
             return res.rowcount == 1
+
+    def log_tool_call(self, task_id: str, name: str, args: dict[str, Any], result: str,
+                      max_entries: int = 60, max_chars: int = 8000) -> None:
+        """Keep what a tool returned so a task can later be replayed offline as an eval fixture."""
+        with self.Session() as s, s.begin():
+            task = s.get(Task, task_id)
+            if task is None:
+                return
+            log = json.loads(task.tool_log_json) if task.tool_log_json else []
+            if len(log) >= max_entries:
+                return
+            log.append({"name": name, "args": args, "result": result[:max_chars]})
+            task.tool_log_json = json.dumps(log)
 
     def accept_result(self, task_id: str, result: dict[str, Any]) -> bool:
         """Store a sandbox result once. A second post (or a post after timeout) is rejected."""
@@ -282,12 +346,85 @@ class TaskStore:
             q = select(FlowRun).where(FlowRun.subject_key == subject_key, FlowRun.status.in_(FLOW_ACTIVE))
             return s.scalars(q.order_by(FlowRun.created_at.desc())).first()
 
+    def active_runs(self, project_path: str | None = None, limit: int = 50) -> list[FlowRun]:
+        with self.Session() as s:
+            q = select(FlowRun).where(FlowRun.status.in_(FLOW_ACTIVE))
+            if project_path:
+                q = q.where(FlowRun.project_path == project_path)
+            return list(s.scalars(q.order_by(FlowRun.created_at.desc()).limit(limit)))
+
     def run_tasks(self, run_id: str, step: int | None = None) -> list[Task]:
         with self.Session() as s:
             q = select(Task).where(Task.flow_run_id == run_id)
             if step is not None:
                 q = q.where(Task.flow_step == step)
             return list(s.scalars(q.order_by(Task.created_at)))
+
+    # -- links & feedback -------------------------------------------------------------------
+    def add_links(self, task: Task, links: list[dict[str, Any]]) -> None:
+        if not links:
+            return
+        with self.Session() as s, s.begin():
+            for link in links:
+                s.add(TaskLink(task_id=task.id, agent=task.agent, project_id=task.project_id,
+                               project_path=task.project_path, **link))
+
+    def task_for(self, project_id: int, kind: str, ref_id: int) -> Task | None:
+        """The task that created an MR (kind="mr", ref_id=iid) or a note (kind="note", ref_id=note id)."""
+        with self.Session() as s:
+            link = s.scalars(select(TaskLink).where(TaskLink.project_id == project_id, TaskLink.kind == kind,
+                                                    TaskLink.ref_id == ref_id)
+                             .order_by(TaskLink.created_at)).first()
+            return s.get(Task, link.task_id) if link else None
+
+    def tasks_with_prefix(self, project_id: int, prefix: str) -> list[Task]:
+        with self.Session() as s:
+            return list(s.scalars(select(Task).where(Task.project_id == project_id, Task.id.like(f"{prefix}%"))
+                                  .order_by(Task.created_at.desc())))
+
+    def links_since(self, since: datetime, limit: int = 500) -> list[TaskLink]:
+        with self.Session() as s:
+            return list(s.scalars(select(TaskLink).where(TaskLink.created_at >= since)
+                                  .order_by(TaskLink.created_at.desc()).limit(limit)))
+
+    def add_feedback(self, task: Task, kind: str, actor: str = "") -> bool:
+        """Record one piece of feedback. False when it was already recorded."""
+        with self.Session() as s:
+            s.add(Feedback(task_id=task.id, agent=task.agent, project_id=task.project_id, kind=kind, actor=actor))
+            try:
+                s.commit()
+                return True
+            except IntegrityError:
+                s.rollback()
+                return False
+
+    def sync_reactions(self, task: Task, current: set[tuple[str, str]]) -> None:
+        """Make the stored reactions of a task match `current` {(kind, actor)}: reactions can be withdrawn."""
+        with self.Session() as s, s.begin():
+            rows = list(s.scalars(select(Feedback).where(Feedback.task_id == task.id, Feedback.kind.in_(REACTIONS))))
+            stored = {(r.kind, r.actor) for r in rows}
+            gone = [r.id for r in rows if (r.kind, r.actor) not in current]
+            if gone:
+                s.execute(delete(Feedback).where(Feedback.id.in_(gone)))
+            for kind, actor in current - stored:
+                s.add(Feedback(task_id=task.id, agent=task.agent, project_id=task.project_id, kind=kind, actor=actor))
+
+    def feedback_for(self, task_ids: Collection[str]) -> list[Feedback]:
+        if not task_ids:
+            return []
+        with self.Session() as s:
+            return list(s.scalars(select(Feedback).where(Feedback.task_id.in_(list(task_ids)))))
+
+    def tasks_since(self, since: datetime, project_path: str | None = None, limit: int = 20000) -> list[Task]:
+        with self.Session() as s:
+            q = select(Task).where(Task.created_at >= since)
+            if project_path:
+                q = q.where(Task.project_path == project_path)
+            return list(s.scalars(q.order_by(Task.created_at.desc()).limit(limit)))
+
+    def project_paths(self) -> list[str]:
+        with self.Session() as s:
+            return sorted(s.scalars(select(Task.project_path).distinct()))
 
     @staticmethod
     def deadline_for(minutes: int) -> datetime:

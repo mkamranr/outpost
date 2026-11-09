@@ -20,12 +20,24 @@ defaults:
   pipeline_fixer:
     branches: ["*"]                           # globs of refs whose failed pipelines are handled
     skip_stale: true                          # ignore failures on SHAs that are no longer the branch head
+  mr_describer:
+    on_open: only_if_empty                    # or `always`; `@agent describe` always writes
+  triage:
+    apply_labels: false                       # true: add the suggested labels instead of only suggesting them
+  security_remediator:
+    auto: false                               # true: also fix findings after green pipelines on `branches`
+    branches: ["main", "master"]
+    min_severity: high                        # critical | high | medium | low
+    max_open_mrs: 2                           # automatic runs pause while this many agent::security-fix MRs are open
 
 projects:
   platform/payments-api:
     test: ["pytest -q"]
-    # All agents: enables chat and every flow (issue-to-mr, fix-and-review, mr-deep-review).
-    agents: [chat, pipeline-fixer, planner, code-writer, code-reviewer, mr-assist, security-analyst, test-writer]
+    # All agents: enables chat and every flow (issue-to-mr, fix-and-review, mr-deep-review, mr-secure).
+    agents: [chat, pipeline-fixer, planner, code-writer, code-reviewer, mr-assist, security-analyst, test-writer,
+             security-remediator, mr-describer, release-notes, issue-triage]
+    triage:
+      apply_labels: true
     protected_paths: [".gitlab/agent.yml", "deploy/", "migrations/"]
     custom_agents:
       enabled: true                           # the team may add read-only agents in .gitlab/agents/
