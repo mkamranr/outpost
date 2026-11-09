@@ -7,7 +7,7 @@ Do not commit real values; `.gitignore` excludes everything here except this REA
 | --- | --- |
 | `webhook_secret` | Random string; set as the "Secret token" on each project webhook. `openssl rand -hex 32` |
 | `ticket_secret` | Random string used to sign sandbox task tickets. `openssl rand -hex 32` |
-| `admin_token` | Random string for `GET /api/tasks` (header `X-Admin-Token`). |
+| `admin_token` | Random string for the operator endpoints: the `/admin` dashboard (HTTP Basic password), `/metrics` (`Authorization: Bearer`), `GET /api/tasks` and fixture export (header `X-Admin-Token`). `openssl rand -hex 32` |
 | `postgres_password` | Database password. |
 | `database_url` | `postgresql+psycopg://agent:<postgres_password>@postgres:5432/agent` |
 | `gitlab_bot_token` | Group or project access token of the service account. Role: Developer. Scope: `api`. Set an expiry. |

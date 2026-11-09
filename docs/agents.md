@@ -166,6 +166,7 @@ ignore:
     reason: test fixture, not shipped
 ```
 
+  A commented example is [`deploy/repo-example/agent-security-ignore.yml`](../deploy/repo-example/agent-security-ignore.yml).
   The file is always a protected path. Any change an agent proposes to it is rejected, so findings can only be
   silenced by a human through a normal MR.
 * **When it skips.** No sandbox starts when nothing matches. A command run replies saying so, and an automatic
@@ -327,7 +328,7 @@ tools it calls; inline cases need no `repo/`.
 
 ## Evaluating changes
 
-`eval/run.py` renders the real prompts from `agents/` for each fixture. It runs the real sandbox runner
+Full reference: [eval/README.md](../eval/README.md). `eval/run.py` renders the real prompts from `agents/` for each fixture. It runs the real sandbox runner
 against vLLM and re-runs the tests itself to score the result. A fixture is a `repo/` directory plus a
 `case.yaml` with the `agent`, `test` commands, the `context` a collector would have produced, and `expect`
 (`classification`, `tests_pass`, `changes`, `body_contains`, `comment_on`, `handoff`, `tools_used`, and for
