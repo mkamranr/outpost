@@ -1,0 +1,45 @@
+agent: mr-describer
+description: An MR with an empty description adds retry logic; the description must say what changed, why (from the linked issue) and how to test.
+instruction: ""
+context:
+  mr:
+    iid: 31
+    title: Retry uploads on connection reset
+    source_branch: 88-upload-retries
+    target_branch: main
+    labels: []
+    description: ""
+  linked_issues:
+    - iid: 88
+      title: Uploads fail on flaky Wi-Fi
+      description: Large uploads abort with ConnectionResetError on unstable networks; users have to start over.
+  mr_diff:
+    files: [uploader.py, test_uploader.py]
+    diff: |
+      --- uploader.py
+      +++ uploader.py
+      @@ -1,8 +1,18 @@
+      +import time
+      +
+      +MAX_RETRIES = 3
+      +
+       def upload(client, path):
+      -    return client.put(path, open(path, "rb").read())
+      +    data = open(path, "rb").read()
+      +    for attempt in range(1, MAX_RETRIES + 1):
+      +        try:
+      +            return client.put(path, data)
+      +        except ConnectionResetError:
+      +            if attempt == MAX_RETRIES:
+      +                raise
+      +            time.sleep(2 ** attempt)
+      --- test_uploader.py
+      +++ test_uploader.py
+      @@ -0,0 +1,12 @@
+      +def test_upload_retries_then_succeeds(fake_client):
+      +    fake_client.fail_times(2)
+      +    assert upload(fake_client, "a.bin") == "ok"
+tool_responses:
+  get_issue: '{"iid": 88, "title": "Uploads fail on flaky Wi-Fi"}'
+expect:
+  body_contains: ["retr", "### why", "### how to test"]

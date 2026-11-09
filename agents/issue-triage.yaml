@@ -1,0 +1,21 @@
+name: issue-triage
+description: Triages a new issue - suggests existing labels, points out likely duplicates and asks the reporter for missing details.
+phase: 5
+mode: readonly
+engine: inline
+output: triage
+max_attempts: 1
+timeout_minutes: 4
+context_budget_tokens: 12000
+context: [issue, project_labels]
+tools: [search_issues, get_issue, search_code]
+max_per_hour: 20        # issues from anyone can start it; keep a burst from tying up the GPU
+prompts:
+  main: issue-triage.md.j2
+triggers:
+  - event: issue
+    actions: [open]
+    allow_any_author: true   # issues are often opened by Reporters; triage is read-only apart from its comment
+  - event: note
+    commands: [triage]
+    targets: [issue]

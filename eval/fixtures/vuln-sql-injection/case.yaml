@@ -1,0 +1,28 @@
+agent: security-remediator
+description: SAST flags SQL built with an f-string; the fix must parameterise the query (the injection test fails until it does).
+test: ["python -m pytest -q"]
+target: {kind: pipeline, project_id: 1, pipeline_id: 601, ref: main, sha: "0000000000000000000000000000000000000000"}
+context:
+  vulnerabilities:
+    pipeline_id: 601
+    min_severity: high
+    total_findings: 1
+    matching: 1
+    scope: whole repository
+    findings:
+      - id: f1
+        scanner: sast
+        severity: high
+        name: SQL injection via string formatting
+        file: users.py
+        line: 12
+        identifiers: [CWE-89]
+        description: User-controlled input is interpolated into an SQL statement passed to execute().
+        solution: Use a parameterised query.
+        code: |
+             11   def find_by_name(conn, name):
+             12 >     cur = conn.execute(f"SELECT name, email FROM users WHERE name = '{name}'")
+             13       return cur.fetchall()
+expect:
+  changes: true
+  tests_pass: true

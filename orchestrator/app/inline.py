@@ -23,6 +23,8 @@ SYSTEM = (
 )
 
 LLMFactory = Callable[[], LLM]
+# The submit schema each inline output uses (agent_runner.explore.SUBMIT_SCHEMAS).
+SUBMIT_KIND = {"chat": "chat", "note": "note", "mr_description": "note", "triage": "triage"}
 
 
 def llm_factory(settings: Settings) -> LLMFactory:
@@ -39,8 +41,13 @@ def run(llm: LLM, bundle: dict[str, Any], invoke: Callable[[str, dict[str, Any]]
     agent = bundle["agent"]
     deadline = time.time() + agent["timeout_minutes"] * 60
     remote = RemoteTools(bundle.get("tools") or [], invoke)
-    answer = explore(llm, None, bundle["prompts"]["main"], agent["output"], deadline, max_turns=20, remote=remote,
-                     system=SYSTEM)
+    kind = SUBMIT_KIND.get(agent["output"], "note")
+    system = bundle["prompts"].get("system") or SYSTEM  # an agent may bring its own system prompt
+    answer = explore(llm, None, bundle["prompts"]["main"], kind, deadline, max_turns=20, remote=remote, system=system)
+    if kind == "triage":
+        return {"status": "success", "body": answer.get("summary") or "", "summary": answer.get("summary") or "",
+                "attempts": [], "changes": [], "triage": {k: answer.get(k) or [] for k in
+                                                          ("labels", "duplicates", "missing_info")}}
     result: dict[str, Any] = {"status": "success", "body": answer["body"], "summary": "", "attempts": [], "changes": []}
     if isinstance(answer.get("handoff"), dict):
         result["handoff"] = answer["handoff"]

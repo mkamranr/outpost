@@ -1,0 +1,19 @@
+{
+  "version": "15.0.7",
+  "scan": {"type": "sast", "status": "success"},
+  "vulnerabilities": [
+    {"id": "f1", "name": "SQL injection via string formatting", "severity": "High",
+     "description": "User input reaches cursor.execute() through an f-string.",
+     "location": {"file": "app/db.py", "start_line": 4},
+     "identifiers": [{"type": "cwe", "name": "CWE-89", "value": "89"}]},
+    {"id": "f2", "name": "Use of insecure MD5 hash", "severity": "Medium",
+     "location": {"file": "app/auth.py", "start_line": 10},
+     "identifiers": [{"type": "cwe", "name": "CWE-327", "value": "327"}]},
+    {"id": "f3", "name": "Hard-coded password", "severity": "Critical",
+     "location": {"file": "app/settings.py", "start_line": 2},
+     "identifiers": [{"type": "cwe", "name": "CWE-798", "value": "798"}]},
+    {"id": "f4", "name": "Command injection", "severity": "High",
+     "location": {"file": "scripts/run.py", "start_line": 1},
+     "identifiers": [{"type": "cwe", "name": "CWE-78", "value": "78"}]}
+  ]
+}
