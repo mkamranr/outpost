@@ -5,6 +5,26 @@ The orchestrator loads them at start-up. It rejects unknown keys and duplicate c
 To change prompts on site without rebuilding, mount `../agents:/app/agents:ro` in `deploy/docker-compose.yml`,
 then restart.
 
+## Built-in agents
+
+| Agent | Mode / engine | Output | Context | Started by |
+| --- | --- | --- | --- | --- |
+| `pipeline-fixer` | edit / aider | `pipeline_fix` | `failed_jobs`, `ci_config`, `pipeline_diff` | failed pipeline; `fix-pipeline` |
+| `planner` | readonly / llm | `note` | `issue`, `issue_notes` | `plan`; `agent::plan` |
+| `code-writer` | edit / aider | `merge_request` | `issue`, `issue_notes` | `approve`, `implement`; `agent::implement` |
+| `code-reviewer` | readonly / llm | `review` | `mr`, `mr_diff` | `review`; `agent::review` |
+| `mr-assist` | edit / aider | `mr_commit` | `mr`, `discussion`, `mr_diff` | `fix`, `change`, `do` |
+| `security-analyst` | readonly / llm | `note` | `mr`, `mr_diff` | `security` |
+| `test-writer` | edit / aider | `mr_commit` | `mr`, `mr_diff` | `tests`, `test` |
+| `security-remediator` | edit / aider | `security_fix` | `vulnerabilities` | `remediate`; green pipeline (opt-in) |
+| `chat` | readonly / inline | `chat` | `subject`, `discussion` | `chat`, `ask`, any other text |
+| `mr-describer` | readonly / inline | `mr_description` | `mr`, `mr_diff`, `linked_issues` | MR open; `describe` |
+| `release-notes` | readonly / inline | `note` | `ref_range` | `release-notes <from>..<to>` |
+| `issue-triage` | readonly / inline | `triage` | `issue`, `project_labels` | issue open (any author); `triage` |
+
+A project runs only the agents listed in its `agents:` in `projects.yaml`. A repository's `.gitlab/agent.yml` can
+narrow that list but never extend it.
+
 ## Definition reference
 
 ```yaml
@@ -27,6 +47,7 @@ note_marker: "<!-- agent:plan -->"  # note outputs: hidden marker other agents c
 note_suffix: "Reply `{mention} approve`…"
 prompts:
   main: code-reviewer.md.j2       # required; `classify` also when classify: true
+  # system: my-agent.system.md.j2 # inline agents only: replaces the default system prompt
 triggers:
   - event: note                   # "@agent <command> <free text>"
     commands: [review]
@@ -46,7 +67,13 @@ triggers:
 
 Every trigger needs Developer access from the person who fired it, except `merge_request` / `issue` triggers
 with `allow_any_author: true`. Those exist for issue triage, where Reporters open most issues. Such agents must be
-read-only and built in, and should set `max_per_hour`.
+read-only and built in, and should set `max_per_hour`. When a Reporter's event matches several agents, only the
+`allow_any_author` ones run.
+
+Loading also rejects:
+* `merge_request` or `issue` triggers without `actions`
+* `allow_any_author` on any other trigger type
+* the `mr_description` and `triage` outputs on an engine other than `inline`
 
 ## Collectors (`orchestrator/app/collectors/`)
 
@@ -64,13 +91,24 @@ read-only and built in, and should set `max_per_hour`.
 | `ref_range` | Commits and referenced MRs between two refs taken from the instruction (`v1.2.0..v1.3.0`) |
 | `vulnerabilities` | Security scanner findings of the pipeline (or the MR's head pipeline, limited to the files it changes), filtered by `security_remediator.min_severity` and `.gitlab/agent-security-ignore.yml`, with code around each location |
 
-Templates receive `context.<collector>`, `instruction` (the text after the command), `repo` (`path`, `ref`,
-`sha`), `project` (merged config), `agent`, `bot_username`, and `catalog` (chat only: the agents and flows it can
-hand off to). Wrap anything users or logs wrote in
+Templates receive:
+* `context.<collector>`
+* `instruction` (the text after the command)
+* `target` (the event: `kind`, `noteable_type`, `iid`, `pipeline_id`, `ref`, `sha`…)
+* `repo` (`path`, `ref`, `sha`)
+* `project` (merged config)
+* `agent`
+* `bot_username`
+* `catalog` (chat only: the agents and flows it can hand off to)
+
+Templates are rendered with strict undefined: a missing key is an error, so use `| default(…)` or `is defined`
+for optional fields. Wrap anything users or logs wrote in
 `<untrusted-data source="…">` and include `_untrusted.md.j2` at the top.
 
 To add a collector, write a function decorated with `@collector("name")` that returns JSON-serialisable data
-within `ctx.budget_tokens` (use `truncate()`). Import its module in `collectors/__init__.py`.
+within `ctx.budget_tokens` (use `truncate()`). Import its module in `collectors/__init__.py`. A collector gets
+`ctx.target`, `ctx.project`, `ctx.sha` / `ctx.ref` and `ctx.instruction` (`ref_range`, for example, reads its range
+from it). A collector that raises is recorded as `{"error": …}` and the agent still runs.
 
 ## Outputs (`orchestrator/app/outputs/`)
 
@@ -92,6 +130,53 @@ All changes pass `outputs/changes.py` before anything is committed. That check r
 * CI files, unless `allow_ci_changes` is set
 * more than 50 files, or any file over 1 MB
 
+## Inline agents
+
+Inline agents (`engine: inline`) run in the orchestrator worker, not in a sandbox job. They have no checkout:
+they read the project only through the GitLab tools in their `tools:` list. They answer in seconds and take
+capacity from `CHAT_WORKERS`, separate from `MAX_CONCURRENT_SANDBOXES`. Only built-in read-only agents can be
+inline. The model finishes by calling `submit`, whose shape depends on the output:
+
+| Output | `submit` arguments |
+| --- | --- |
+| `note`, `mr_description` | `{"body": "<markdown>"}` |
+| `chat` | `{"body": "…", "handoff": {"target": "<agent or flow>", "instruction": "…"}}` (handoff optional) |
+| `triage` | `{"summary": "…", "labels": [...], "duplicates": [{"iid": 12, "reason": "…"}], "missing_info": [...]}` |
+
+The output handler, not the model, decides what reaches GitLab. Triage drops labels the project lacks and
+`agent::*` labels, and keeps only duplicates that exist. The MR description handler strips the marker comments
+from the model's text, so it can't write outside its block. Automatic `mr-describer` runs skip descriptions
+the author already wrote before any model call.
+
+## Security remediator
+
+`security-remediator` gets its findings from the `vulnerabilities` collector, not from a tool.
+* **Where findings come from.** The collector reads the pipeline's findings through GitLab GraphQL
+  (`securityReportFindings`, queries only). On older instances it falls back to `gl-*-report.json` job artifacts.
+  For a pipeline event it uses that pipeline; for `@agent remediate` on an MR, the MR's head pipeline, keeping only
+  findings in files the MR changes.
+* **Filtering.** It keeps findings at or above `security_remediator.min_severity` (critical > high > medium >
+  low), drops ignored ones, sorts by severity, keeps the top 10, and attaches the code around each location.
+* **The ignore list.** It lives in `.gitlab/agent-security-ignore.yml` on the default branch:
+
+```yaml
+ignore:
+  - CVE-2023-12345                       # an identifier (CVE, CWE, scanner rule)...
+  - id: 3f2a9c1e-…                       # ...or a finding id
+    reason: test fixture, not shipped
+```
+
+  The file is always a protected path. Any change an agent proposes to it is rejected, so findings can only be
+  silenced by a human through a normal MR.
+* **When it skips.** No sandbox starts when nothing matches. A command run replies saying so, and an automatic
+  run just records `skipped`. Automatic runs also skip while `max_open_mrs` MRs labelled `agent::security-fix` are
+  open. Inside the `mr-secure` flow it always runs, because the `security-analyst` report from the previous step
+  is part of its prompt.
+
+The prompt forbids suppression comments, scanner exclusions and deleted tests. It also says to bump
+dependencies only when the offline mirror has the fixed version. The fix summary lists each finding as fixed or
+not fixed, with the reason.
+
 ## Tools (`orchestrator/app/tools/`)
 
 Agents with a `tools:` list get these as function-calling tools next to `list_files` / `read_file` / `grep`.
@@ -108,7 +193,11 @@ come back wrapped as untrusted data and truncated to about 10K characters. Each 
 Read-only agents use the tools throughout their loop. Edit agents (Aider, mini-SWE-agent) can't call tools, so
 the runner first runs a short investigation loop with them. Its findings and suspect files are passed to the
 engine. To add a tool, decorate a function in `tools/gitlab.py` with `@tool(name, description, parameters,
-required)`. It must stay read-only, and `test_every_tool_is_read_only` checks that.
+required)`. It must stay read-only, and `test_every_tool_is_read_only` checks that. It allows GET requests only,
+which is why security findings, read through GraphQL POST queries, come from a collector instead of a tool.
+
+Every tool call and its (truncated) result is stored on the task, so the task can be exported as an eval fixture
+with real `tool_responses`.
 
 ## Flows (`agents/flows/*.yaml`)
 
@@ -127,6 +216,15 @@ steps:
     target: produced_mr           # subject (default) | produced_mr: the MR the previous agent step opened
     when: success                 # success (default): every task of the previous step succeeded | always
 ```
+
+Shipped flows:
+
+| Flow | Command / label | Steps |
+| --- | --- | --- |
+| `issue-to-mr` | `build`; `agent::flow::issue-to-mr` | planner → approval → code-writer → code-reviewer + security-analyst on the new MR |
+| `fix-and-review` | `fix-and-review` | pipeline-fixer → code-reviewer on the fix MR |
+| `mr-deep-review` | `deep-review`; `agent::flow::deep-review` | code-reviewer + security-analyst → test-writer |
+| `mr-secure` | `secure` | security-analyst → security-remediator |
 
 A flow is offered in a project only when every agent it uses is enabled there. Each step creates ordinary tasks,
 so the same sandbox, policies and outputs apply. Later steps also see a short summary of what earlier steps
@@ -173,11 +271,13 @@ triggers:
 ```
 
 The untrusted-data preamble is always put in front of the prompt. Custom agents:
-* can't use pipeline or MR-lifecycle triggers, built-in commands or labels, note markers, CI changes or the inline engine;
+* can't use pipeline, MR-lifecycle or issue triggers, `allow_any_author`, built-in commands or labels, note
+  markers, CI changes or the inline engine;
 * must stay within the admin's tool and engine allowlists, with timeouts of 45 minutes or less;
 * are skipped when invalid. `@agent help` shows why.
 
-`.gitlab/agents/` and `.gitlab/agent.yml` are always protected paths, so no agent can change them. A repo can turn
+`.gitlab/agents/`, `.gitlab/agent.yml` and `.gitlab/agent-security-ignore.yml` are always protected paths, so no
+agent can change them. A repo can turn
 custom agents off with `custom_agents: false` in `.gitlab/agent.yml`, but it can't turn them on.
 
 ## Example: add a "docs-writer" agent
@@ -200,6 +300,31 @@ triggers:
 Write `agents/prompts/docs-writer.md.j2`, add `docs-writer` to the project's `agents:` in `projects.yaml`,
 restart, and comment `@agent docs` on an MR. Add an `eval/fixtures/<case>/` covering it before relying on it.
 
+## Example: add an inline "explain-failure" agent
+
+A read-only agent that answers in seconds, with no sandbox:
+
+```yaml
+# agents/explain-failure.yaml
+name: explain-failure
+description: Explains in plain words why the latest pipeline of an MR failed.
+mode: readonly
+engine: inline
+output: note
+timeout_minutes: 4
+context: [mr]
+tools: [get_merge_request, get_pipeline_jobs, get_job_log]
+max_per_hour: 30
+prompts: {main: explain-failure.md.j2}
+triggers:
+  - event: note
+    commands: [why]
+    targets: [merge_request]
+```
+
+The template ends by asking for `submit` with `{"body": "…"}`. For an eval case, give it `tool_responses` for the
+tools it calls; inline cases need no `repo/`.
+
 ## Evaluating changes
 
 `eval/run.py` renders the real prompts from `agents/` for each fixture. It runs the real sandbox runner
@@ -210,6 +335,17 @@ issue triage `labels` and `duplicate_of`).
 `tool_responses` maps tool names to canned results (a string, or a list returned in order). `catalog` gives the
 chat agent its handoff table. Inline agents such as `chat` need no `repo/`.
 Add a fixture for every real failure an agent gets wrong. That is how prompt quality improves without regressions.
+
+### Measuring on real work
+
+The dashboard (`/admin`) and `/metrics` show, per agent:
+* MR acceptance (merged ÷ merged + closed)
+* 👍 / 👎 on its comments
+* green pipelines on its branches
+* failures, median time and tool calls
+
+After changing a prompt, model or engine, compare these for a week or two against the period before, next to
+the offline eval pass rate. A rise in 👎 or closed MRs is the cue to export those tasks as fixtures.
 
 ### Turning real failures into fixtures
 
