@@ -176,7 +176,7 @@ GitLab ──webhook──► orchestrator (FastAPI + worker + Postgres)        
 | `sandbox/` | `agent-runner` (runs inside the CI job), engines (Aider, mini-SWE-agent, read-only tool loop), image Dockerfiles, sandbox project CI |
 | `deploy/` | docker compose stack, runner config + egress firewall, config templates, GitLab bootstrap script |
 | `build/` | internet-side image build, offline verification, air-gap-side load/push |
-| `eval/` | offline evaluation harness with seeded-failure fixtures, and `export_task.py` to turn real tasks into fixtures |
+| `eval/` | offline evaluation harness with seeded-failure fixtures, and `export_task.py` to turn real tasks into fixtures; see [eval/README.md](eval/README.md) |
 | `scripts/` | vLLM tool-calling smoke test, stub LLM |
 
 ## Getting started
