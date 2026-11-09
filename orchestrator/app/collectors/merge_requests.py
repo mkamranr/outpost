@@ -31,6 +31,17 @@ def mr_diff(ctx: CollectContext) -> dict[str, Any]:
     return {"files": [d.get("new_path") for d in diffs], "diff": _format_diffs(diffs, ctx.budget_tokens)}
 
 
+@collector("review_memory", budget=1500)
+def review_memory(ctx: CollectContext) -> dict[str, Any]:
+    """Comments the team dismissed on this agent's earlier reviews in the project (👎, or resolved unchanged)."""
+    if ctx.store is None:
+        return {"comments": []}
+    rows = ctx.store.dismissed_review_comments(ctx.target["project_id"], ctx.agent or None, limit=20)
+    per = max(ctx.budget_tokens // max(len(rows), 1), 60)
+    return {"comments": [{"path": r.path, "why": r.why, "body": truncate(r.body.replace("\n", " "), per, keep="head")}
+                         for r in rows]}
+
+
 @collector("discussion")
 def discussion(ctx: CollectContext) -> dict[str, Any]:
     """The thread containing the triggering comment, including the code line it is attached to."""

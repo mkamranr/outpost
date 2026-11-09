@@ -70,6 +70,11 @@ def compute(platform: "Platform", days: int, project: str | None = None) -> dict
         if f.kind in (THUMBS_UP, THUMBS_DOWN):
             reactions[f.task_id][f.kind] += 1
 
+    review: dict[str, Counter[str]] = defaultdict(Counter)
+    for c in store.review_comments_since(utcnow() - timedelta(days=days), project or None):
+        review[c.agent]["posted"] += 1
+        review[c.agent]["dismissed"] += int(bool(c.dismissed))
+
     agents: dict[str, dict[str, Any]] = {}
     durations: dict[str, list[float]] = defaultdict(list)
     for t in tasks:
@@ -100,6 +105,8 @@ def compute(platform: "Platform", days: int, project: str | None = None) -> dict
         a["acceptance"] = round(100 * a["merged"] / decided) if decided else None
         a["median_seconds"] = round(median(durations[name])) if durations[name] else None
         a["avg_tool_calls"] = round(a["tool_calls"] / a["total"], 1) if a["total"] else 0
+        a["review_comments"] = review[name]["posted"]
+        a["review_dismissed"] = review[name]["dismissed"]
     return {
         "agents": sorted(agents.values(), key=lambda a: (-a["total"], a["agent"])),
         "durations": durations,
@@ -150,6 +157,13 @@ def metrics_text(platform: "Platform", days: int = 30) -> str:
               "# TYPE outpost_tool_calls gauge"]
     for a in stats["agents"]:
         lines.append(f'outpost_tool_calls{{agent="{_label(a["agent"])}"}} {a["tool_calls"]}')
+    lines += ["# HELP outpost_review_comments Inline review comments from the window, posted and dismissed by the team.",
+              "# TYPE outpost_review_comments gauge"]
+    for a in stats["agents"]:
+        if a["review_comments"]:
+            lines.append(f'outpost_review_comments{{agent="{_label(a["agent"])}",state="posted"}} {a["review_comments"]}')
+            lines.append(f'outpost_review_comments{{agent="{_label(a["agent"])}",state="dismissed"}} '
+                         f'{a["review_dismissed"]}')
     lines += ["# HELP outpost_queue_depth Tasks queued or running, by lane.", "# TYPE outpost_queue_depth gauge"]
     for lane, n in queue_depth(platform).items():
         lines.append(f'outpost_queue_depth{{lane="{lane}"}} {n}')
@@ -189,6 +203,7 @@ th{font-weight:600;color:var(--muted);font-size:12px}td.num,th.num{text-align:ri
 <div class="tile"><span class="muted">Failed</span><b class="{{ 'bad' if totals.failed else '' }}">{{ totals.failed }}</b></div>
 <div class="tile"><span class="muted">MR acceptance</span><b>{{ totals.acceptance if totals.acceptance is not none else '–' }}{% if totals.acceptance is not none %}%{% endif %}</b></div>
 <div class="tile"><span class="muted">👍 / 👎</span><b>{{ totals.up }} / {{ totals.down }}</b></div>
+<div class="tile"><span class="muted">Review comments dismissed</span><b>{{ totals.review_dismissed }} / {{ totals.review_comments }}</b></div>
 <div class="tile"><span class="muted">Queued · inline / sandbox</span><b>{{ queue.inline }} / {{ queue.sandbox }}</b></div>
 </div>
 <h2>Agents</h2>
@@ -236,7 +251,8 @@ _template = _env.from_string(TEMPLATE)
 def render(platform: "Platform", days: int, project: str | None) -> str:
     stats = compute(platform, days, project)
     agents = stats["agents"]
-    totals = {k: sum(a[k] for a in agents) for k in ("total", "failed", "merged", "closed", "up", "down")}
+    totals = {k: sum(a[k] for a in agents) for k in ("total", "failed", "merged", "closed", "up", "down",
+                                                     "review_comments", "review_dismissed")}
     decided = totals["merged"] + totals["closed"]
     totals["acceptance"] = round(100 * totals["merged"] / decided) if decided else None
     recent = []
