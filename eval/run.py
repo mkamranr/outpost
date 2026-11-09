@@ -10,7 +10,9 @@ Run inside a sandbox image (it has agent-runner, Jinja2, PyYAML and pydantic in 
 Each fixture is eval/fixtures/<case>/{case.yaml, repo/}. Results go to eval/out/report.{json,md}.
 GitLab tool calls (job logs, MRs, ...) are answered from the case's `tool_responses`; inline agents (chat) need no repo/.
 Re-run after any prompt, model, engine or vLLM change; compare the pass rate with the previous report.
+Options: --case NAME (repeatable), --engine aider|mini-swe, --include-drafts, --out DIR.
 Cases exported from real tasks (eval/export_task.py) start as `draft: true` and are skipped until completed.
+Case format, `expect` checks and the export workflow: eval/README.md.
 """
 from __future__ import annotations
 
