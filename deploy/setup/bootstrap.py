@@ -32,6 +32,7 @@ LABELS = {
     "agent::implement": ("#428bca", "Ask the code-writer agent to implement the approved plan"),
     "agent::review": ("#5cb85c", "Have the code-reviewer agent review this MR on every push"),
     "agent::generated": ("#8e44ad", "Opened by an agent"),
+    "agent::security-fix": ("#d9534f", "Security fix opened by the security-remediator agent"),
     "agent::approved": ("#2e8b57", "Approve the waiting step of a running agent flow"),
     "agent::flow::issue-to-mr": ("#1f75cb", "Run the issue-to-mr flow: plan, approve, implement, review"),
     "agent::flow::deep-review": ("#1f75cb", "Run the mr-deep-review flow: review + security, then tests"),
