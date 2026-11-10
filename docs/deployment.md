@@ -115,6 +115,15 @@ to 20 runs per project per hour (`max_per_hour` in `agents/issue-triage.yaml`).
 Teams list accepted risks and false positives in `.gitlab/agent-security-ignore.yml` on the default branch (finding
 ids or identifiers such as `CVE-…`/`CWE-…`, optionally `{id: …, reason: …}`). Agents can never change that file.
 
+**Conflict resolver.** Add `conflict-resolver` to a project's `agents:` for `@agent rebase`. It needs no other
+settings. For MRs that are behind without conflicts, it calls GitLab's rebase API only on `agent/*` branches (or
+on every branch with `allow_push_to_mr_branch: true`). The bot account therefore needs push access to `agent/*`
+branches, which it already has for its other MRs. With conflicts, it runs in the sandbox like any edit agent and
+opens a replacement Draft MR.
+
+**Team instructions.** Nothing to configure. A team that commits `.gitlab/agent-instructions.md` to its default
+branch has every agent read it (example: `deploy/repo-example/agent-instructions.md`).
+
 **Feedback and eval export** (optional, in `.env`):
 
 | Variable | Default | Effect |
@@ -184,8 +193,8 @@ network. GitLab needs only `/webhook`, and sandbox jobs need only `/api/tasks/<i
 `X-Admin-Token: $(cat secrets/admin_token)` lists recent tasks, their status, outcome and sandbox pipeline.
 
 **Dashboard and metrics.** Open `http://<orchestrator>:8080/admin` and log in with any user name and the admin
-token as the password. It shows each agent's tasks, failures, MR acceptance rate and 👍/👎. Have Prometheus
-scrape the same numbers:
+token as the password. It shows each agent's tasks, failures, MR acceptance rate, 👍/👎, LLM tokens and dismissed review comments.
+Have Prometheus scrape the same numbers:
 
 ```yaml
 scrape_configs:
@@ -195,8 +204,13 @@ scrape_configs:
     static_configs: [{targets: ["agent-orchestrator.internal:8080"]}]
 ```
 
-Useful alerts: `outpost_queue_depth{lane="sandbox"}` staying above `MAX_CONCURRENT_SANDBOXES`, and a falling ratio
-of `outpost_feedback{kind="mr_merged"}` to `outpost_feedback{kind="mr_closed"}` after a prompt or model change.
+Useful alerts and graphs:
+* `outpost_queue_depth{lane="sandbox"}` staying above `MAX_CONCURRENT_SANDBOXES`
+* a falling ratio of `outpost_feedback{kind="mr_merged"}` to `outpost_feedback{kind="mr_closed"}` after a prompt or
+  model change
+* `outpost_llm_tokens` per agent, for GPU sizing and for spotting a prompt that suddenly grows. All three metrics
+  are gauges over the dashboard window (30 days), not counters.
+* a rising share of `outpost_review_comments{state="dismissed"}`: the review prompt needs work
 
 ## 7. Pilot
 
@@ -220,9 +234,15 @@ of `outpost_feedback{kind="mr_merged"}` to `outpost_feedback{kind="mr_closed"}` 
    * `security-remediator`: needs GitLab Ultimate security scanners in the pipeline. Comment `@agent remediate`
      on an MR whose pipeline has SAST findings in the files it changes. Automatic runs on the default branch
      stay off until you set `security_remediator.auto: true`.
-8. Open `/admin`: the pilot's tasks are listed. React 👎 on one of the agent's comments, and within
-   `FEEDBACK_POLL_SECONDS` the dashboard counts it. Its **Export fixture** link downloads it as an eval case.
-9. Run the offline evaluation and keep its report as your baseline:
+   * `conflict-resolver`: on an MR that conflicts with `main`, comment `@agent rebase`. A replacement Draft MR
+     `… (conflicts resolved)` appears, linked from the original.
+8. Commit a short `.gitlab/agent-instructions.md` to the pilot's default branch (for example "do not comment on
+   naming"). Run `@agent review` again: the review should follow it.
+9. Open `/admin`: the pilot's tasks are listed, with their tokens. React 👎 on one of the reviewer's inline
+   comments, and within `FEEDBACK_POLL_SECONDS` the dashboard counts it as dismissed.
+   `GET /api/review-memory?project_id=<id>` lists it, and the next `@agent review` is told not to repeat it. The
+   task's **Export fixture** link downloads it as an eval case.
+10. Run the offline evaluation and keep its report as your baseline:
 
 ```bash
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/w" -w /w -e AGENT_LLM_BASE_URL=http://vllm.internal:8000/v1 -e AGENT_LLM_MODEL=qwen3.8-27b \
@@ -265,4 +285,9 @@ from before the tool-call log existed export without `tool_responses`.
 | Chat replies "I could not answer that" | Worker log. `LLM_BASE_URL`/`LLM_MODEL` unset, or vLLM is unreachable from the orchestrator host. |
 | A flow is missing from `@agent help` | Every agent in the flow must be enabled for the project. |
 | A flow stays at "waiting for approval" | Approve with `@agent approve` (Developer access) or the `agent::approved` label on the same issue/MR. |
+| `@agent rebase` says to use the Rebase button | The MR has no conflicts and its branch belongs to a person; agents rebase only `agent/*` branches unless `allow_push_to_mr_branch` is set. |
+| `@agent rebase` refuses an MR with conflicts | The MR changes more than 50 files compared with its target, or touches protected paths; a replacement MR could not carry those. Resolve it by hand or with GitLab's conflict editor. |
+| Tokens show `–` on the dashboard | The task ran before usage was recorded, or its engine reports none (mini-swe releases without raw responses count only calls). |
+| The reviewer still repeats a dismissed point | Only 👎 (net of 👍) or a thread resolved with the file unchanged counts, and only for comments posted since this release. Check `GET /api/review-memory?project_id=…`. |
+| The reviewer avoids a point it should make | A wrong entry in review memory: `DELETE /api/review-memory/<id>` with the admin token. |
 | A custom agent is missing | `@agent help` lists rejected `.gitlab/agents/` files with the reason. It must be on the default branch, and `custom_agents.enabled` must be set. |

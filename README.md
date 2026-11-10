@@ -5,8 +5,10 @@
 <h1 align="center">Outpost</h1>
 
 <p align="center"><b>Self-hosted AI agents for air-gapped GitLab:</b> pipeline fixing, planning, code writing,
-review, security remediation, issue triage, MR descriptions and release notes, multi-agent flows and chat,
-running on your own GPUs and runners. Feedback on every agent's work and a metrics dashboard are built in.</p>
+review, security remediation, merge-conflict resolution, issue triage, MR descriptions and release notes,
+multi-agent flows and chat, running on your own GPUs and runners. Teams steer every agent with one instructions
+file, the reviewer learns from the comments it gets wrong, and feedback, token usage and a metrics dashboard are
+built in.</p>
 
 ---
 
@@ -96,11 +98,26 @@ These lightweight agents run **inside the orchestrator**, like chat. They answer
 * **`release-notes`** groups the commits and merge requests between two refs into Features, Fixes, Breaking
   changes and Security, for example `@agent release-notes v1.2.0..v1.3.0`.
 
+### Conflict resolution
+
+`@agent rebase` on a merge request brings it up to date with its target branch.
+* **Behind, no conflicts.** On `agent/*` branches the orchestrator calls GitLab's own rebase. No sandbox or model
+  is used. On branches people own, it points to GitLab's **Rebase** button: agents never rewrite human branches.
+* **Conflicts.** The sandbox merges the target in and the engine resolves the conflicted files. An attempt fails
+  while any conflict marker is left. Then the project's tests run. The result opens as a **replacement Draft MR**
+  cut from the target branch and linked from the original. The original branch stays as it was, and a human
+  picks which MR to merge.
+* **Limits.** The replacement squashes the MR's history into one commit, because the Commits API can't write
+  merge commits. MRs that touch more than 50 files or protected paths are refused up front. See
+  [docs/agents.md](docs/agents.md#conflict-resolver).
+
 ### Team instructions
 
 Put your conventions, review focus and architecture notes in `.gitlab/agent-instructions.md` on the default
-branch, and every agent reads them. MRs can't change the instructions before they are merged, and no agent can
-edit the file. See [docs/agents.md](docs/agents.md#team-instructions-gitlabagent-instructionsmd).
+branch, and every agent reads them: built-in, custom, inline and sandbox. They can't override the safety rules,
+and they're cut off after ~2000 tokens. MRs can't change the instructions before they are merged, and no agent
+can edit the file. Start from [`deploy/repo-example/agent-instructions.md`](deploy/repo-example/agent-instructions.md);
+details are in [docs/agents.md](docs/agents.md#team-instructions-gitlabagent-instructionsmd).
 
 ### Custom agents
 
@@ -116,15 +133,19 @@ Outpost records whether agent work helped:
 * 👍 / 👎 on the agents' notes and MRs, polled every `FEEDBACK_POLL_SECONDS`. Withdrawn reactions are removed.
 * agent MRs merged, or closed without merging
 * pipelines going green on agent branches
-* inline review comments the team dismissed (👎, or resolved without a change). The reviewer is shown them
-  next time, so it learns the team's taste instead of repeating itself
-  ([review memory](docs/agents.md#review-memory))
+* LLM tokens (prompt / completion) and requests per task, from vLLM's `usage` and Aider's own counts
 
-Use these numbers to compare prompt, model and engine changes on real work.
+Use these numbers to compare prompt, model and engine changes on real work, and to size GPUs.
+
+**Review memory.** Each inline review comment is tracked on its own. A comment is **dismissed** when it gets a
+👎 (and no more 👍 than 👎), or when its thread is resolved while the commented file stays unchanged. The next
+review in the project is shown the last 20 dismissed comments and told not to repeat them unless it's clearly a
+real bug. Teams teach the reviewer just by reacting and resolving, as they already do. A wrong entry can be
+dropped with `DELETE /api/review-memory/{id}`. See [docs/agents.md](docs/agents.md#review-memory).
 
 `/admin` is a server-rendered page with no JavaScript or CDN. It shows each agent's task counts, failures, MR
-acceptance rate, reactions, median duration, tool use and LLM tokens, plus running flows, queue depth and
-recent tasks.
+acceptance rate, reactions, median duration, tool use, LLM tokens and dismissed review comments, plus running
+flows, queue depth and recent tasks.
 `/metrics` serves the same numbers in Prometheus format. Both need the admin token: browsers use HTTP Basic
 with any user name and the token as the password, and Prometheus uses `Authorization: Bearer`. Failed or 👎
 tasks can be exported as [eval fixtures](docs/agents.md#turning-real-failures-into-fixtures), so real failures
@@ -142,9 +163,10 @@ python eval/export_task.py --url https://outpost.internal --token "$ADMIN_TOKEN"
 | `POST /webhook` | webhook secret | GitLab events in |
 | `GET /admin` | admin token (HTTP Basic) | dashboard |
 | `GET /metrics` | admin token (Bearer) | Prometheus metrics |
-| `GET /api/tasks` | admin token | recent tasks as JSON |
-| `GET /api/review-memory?project_id=` / `DELETE /api/review-memory/{id}` | admin token | list or forget dismissed review comments |
+| `GET /api/tasks` | admin token | recent tasks as JSON, with token usage |
 | `GET /api/tasks/{id}/fixture` | admin token | a task as an eval fixture (`.tar.gz`) |
+| `GET /api/review-memory?project_id=` | admin token | the dismissed review comments a project's reviewer is told to avoid |
+| `DELETE /api/review-memory/{id}` | admin token | forget one of them |
 | `GET /healthz` | none | liveness and the loaded agents |
 
 The sandbox uses `/api/tasks/{id}/bundle`, `/result` and `/tools/{name}` with its short-lived ticket.
@@ -167,6 +189,8 @@ GitLab ──webhook──► orchestrator (FastAPI + worker + Postgres)        
   (protected paths, CI files, size, path traversal) and commits them through the Commits API.
 * **Agents never merge.** Agents write only to `agent/*` branches and open *Draft* MRs. Protected `main` plus
   approval rules keep humans in charge. On a human's MR branch, agents open a stacked follow-up MR instead of pushing.
+  The conflict resolver opens a replacement MR instead, and asks GitLab to rebase only `agent/*` branches (unless
+  `allow_push_to_mr_branch` is set).
 * **Untrusted input.** Issue text, comments and logs are wrapped as untrusted data in prompts. Model output is
   sanitised so it cannot run GitLab quick actions (`/merge`, `/approve`) or ping `@all`. Only users with Developer
   access can trigger agents or approve flow gates. The one exception is triggers marked `allow_any_author`, which
@@ -174,6 +198,8 @@ GitLab ──webhook──► orchestrator (FastAPI + worker + Postgres)        
   ignored, so agents cannot trigger each other. Agents are chained only by flows, which the orchestrator runs explicitly (acyclic, at most 10 steps).
 * **Loop limits.** Each agent has a cap on attempts and a wall-clock limit. The pipeline fixer stops after N fix attempts
   on its own branch. Every run ends with an MR or a comment saying what was tried.
+* **Team rules from the default branch only.** `.gitlab/agent-instructions.md`, custom agents and the security
+  ignore list are read from the default branch, so an MR can't change how agents treat it. Agents can't edit them.
 * **Focused context.** Collectors extract the failing part of job traces, the diff since the last green pipeline,
   scanner findings with the code around them, and similar slices, within a per-agent token budget (~30K by default).
 * **Measured, not assumed.** Reactions and outcomes (merged or closed MRs, green pipelines) are recorded for every
@@ -183,10 +209,10 @@ GitLab ──webhook──► orchestrator (FastAPI + worker + Postgres)        
 
 | Path | Contents |
 | --- | --- |
-| `orchestrator/` | FastAPI webhook receiver, router, task queue, context collectors, GitLab tools, flow engine, custom-agent catalog, inline agents, output handlers, feedback, dashboard and metrics, fixture export |
+| `orchestrator/` | FastAPI webhook receiver, router, task queue, context collectors, GitLab tools, flow engine, custom-agent catalog and team instructions (default-branch files), inline agents, conflict pre-checks and GitLab rebase, output handlers, feedback and review memory, dashboard and metrics, fixture export |
 | `agents/` | agent definitions (`*.yaml`), prompt templates (`prompts/*.md.j2`) and flows (`flows/*.yaml`) |
 | `sandbox/` | `agent-runner` (runs inside the CI job), engines (Aider, mini-SWE-agent, read-only tool loop), image Dockerfiles, sandbox project CI |
-| `deploy/` | docker compose stack, runner config + egress firewall, config templates, GitLab bootstrap script |
+| `deploy/` | docker compose stack, runner config + egress firewall, config templates, GitLab bootstrap script, per-repository examples (`repo-example/`: `agent.yml`, `agent-instructions.md`, `agent-security-ignore.yml`, a custom agent) |
 | `build/` | internet-side image build, offline verification, air-gap-side load/push |
 | `eval/` | offline evaluation harness with seeded-failure fixtures, and `export_task.py` to turn real tasks into fixtures; see [eval/README.md](eval/README.md) |
 | `scripts/` | vLLM tool-calling smoke test, stub LLM |
