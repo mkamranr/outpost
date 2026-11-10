@@ -7,7 +7,6 @@ collide with the built-in catalog. Invalid files are skipped and reported in `er
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass, field
 
 import yaml
@@ -16,11 +15,11 @@ from pydantic import ValidationError
 from .config import CustomAgentsPolicy
 from .gitlab_client import GitLab
 from .registry import AgentDef, CustomAgentDef, Registry
+from .repofiles import DefaultBranchFiles
 
 log = logging.getLogger("orchestrator.catalog")
 
 AGENTS_DIR = ".gitlab/agents"
-CACHE_SECONDS = 60
 
 
 @dataclass
@@ -72,25 +71,20 @@ def parse(files: dict[str, str], policy: CustomAgentsPolicy, registry: Registry,
 
 
 class CatalogCache:
-    """Per-project cache keyed by the default branch head, rechecked at most every CACHE_SECONDS."""
+    """Per-project cache keyed by the default branch head (see repofiles.DefaultBranchFiles)."""
 
-    def __init__(self, registry: Registry):
+    def __init__(self, registry: Registry, files: DefaultBranchFiles | None = None):
         self.registry = registry
-        self._cache: dict[int, tuple[float, RepoCatalog]] = {}
+        self.files = files or DefaultBranchFiles()
+        self._cache: dict[int, RepoCatalog] = {}
 
     def get(self, gl: GitLab, project_id: int, policy: CustomAgentsPolicy) -> RepoCatalog:
         if not policy.enabled:
             return RepoCatalog(sha="")
-        now = time.monotonic()
+        sha = self.files.head(gl, project_id)
         cached = self._cache.get(project_id)
-        if cached and now - cached[0] < CACHE_SECONDS:
-            return cached[1]
-        project = gl.project(project_id)
-        head = gl.branch(project_id, project["default_branch"]) or {}
-        sha = (head.get("commit") or {}).get("id", "")
-        if cached and cached[1].sha == sha:
-            self._cache[project_id] = (now, cached[1])
-            return cached[1]
+        if cached and cached.sha == sha:
+            return cached
         files: dict[str, str] = {}
         if sha:
             for entry in gl.repository_tree(project_id, AGENTS_DIR, sha):
@@ -101,5 +95,5 @@ class CatalogCache:
         catalog = parse(files, policy, self.registry, sha)
         for path, why in catalog.errors.items():
             log.warning("project %s: skipped custom agent %s: %s", project_id, path, why)
-        self._cache[project_id] = (now, catalog)
+        self._cache[project_id] = catalog
         return catalog
