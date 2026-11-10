@@ -8,6 +8,21 @@ from ..llm import LLMConfig
 from . import EngineRun
 
 
+def message_usage(agent: object) -> dict[str, int] | None:
+    """Best effort: recent mini-swe-agent releases keep each raw litellm response in the message's `extra`."""
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+    for message in getattr(agent, "messages", None) or []:
+        response = ((message.get("extra") or {}).get("response") or {}) if isinstance(message, dict) else {}
+        if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+            usage["calls"] += 1
+            usage["prompt_tokens"] += int(response["usage"].get("prompt_tokens") or 0)
+            usage["completion_tokens"] += int(response["usage"].get("completion_tokens") or 0)
+    if not usage["calls"]:
+        calls = getattr(getattr(agent, "model", None), "n_calls", 0)
+        return {"prompt_tokens": 0, "completion_tokens": 0, "calls": int(calls)} if calls else None
+    return usage
+
+
 class MiniSweEngine:
     def __init__(self, llm: LLMConfig, workdir: Path):
         self.llm = llm
@@ -46,6 +61,8 @@ class MiniSweEngine:
         task += "\n\nWork in the current directory. Do not commit. Finish when the change is complete."
         try:
             status, message = agent.run(task)
-            return EngineRun(ok=status in ("Submitted", "submitted"), log_tail=f"{status}: {str(message)[-4000:]}")
+            return EngineRun(ok=status in ("Submitted", "submitted"), log_tail=f"{status}: {str(message)[-4000:]}",
+                             usage=message_usage(agent))
         except Exception as exc:  # noqa: BLE001 - the step/time limits surface as exceptions
-            return EngineRun(ok=False, log_tail=f"mini-swe-agent stopped: {type(exc).__name__}: {exc}"[:4000])
+            return EngineRun(ok=False, log_tail=f"mini-swe-agent stopped: {type(exc).__name__}: {exc}"[:4000],
+                             usage=message_usage(agent))

@@ -7,8 +7,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Collection
 
-from sqlalchemy import (DateTime, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, false, func,
-                        inspect, select, text, update)
+from sqlalchemy import (Boolean, DateTime, Index, Integer, String, Text, UniqueConstraint, create_engine, delete, false,
+                        func, inspect, select, text, update)
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -63,6 +63,9 @@ class Task(Base):
     flow_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     produced_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # what the output handler created
     tool_log_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # tool calls and results, for eval export
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # LLM usage reported by the run
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    llm_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     @property
     def target(self) -> dict[str, Any]:
@@ -148,6 +151,43 @@ class Feedback(Base):
     kind: Mapped[str] = mapped_column(String(32))
     actor: Mapped[str] = mapped_column(String(255), default="")  # "" for outcomes
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class ReviewComment(Base):
+    """An inline comment a review agent posted, and whether the team dismissed it (review memory)."""
+
+    __tablename__ = "review_comments"
+    __table_args__ = (Index("ix_review_comments_memory", "project_id", "agent", "dismissed"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(32), index=True)
+    agent: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[int] = mapped_column(Integer)
+    project_path: Mapped[str] = mapped_column(String(255))
+    mr_iid: Mapped[int] = mapped_column(Integer)
+    note_id: Mapped[int] = mapped_column(Integer, index=True)
+    discussion_id: Mapped[str] = mapped_column(String(64))
+    path: Mapped[str] = mapped_column(String(1024))
+    line: Mapped[int] = mapped_column(Integer)
+    body: Mapped[str] = mapped_column(Text)
+    head_sha: Mapped[str] = mapped_column(String(64))  # the MR head the comment was made on
+    up: Mapped[int] = mapped_column(Integer, default=0)
+    down: Mapped[int] = mapped_column(Integer, default=0)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    unchanged: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # file untouched when it was resolved
+    dismissed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+    def refresh(self) -> None:
+        """Dismissed: 👎 at least as often as 👍, or resolved without changing the commented file."""
+        self.dismissed = bool(((self.down or 0) > 0 and (self.down or 0) >= (self.up or 0))
+                              or (self.resolved and self.unchanged))
+
+    @property
+    def why(self) -> str:
+        if (self.down or 0) > 0 and (self.down or 0) >= (self.up or 0):
+            return "thumbs down"
+        return "resolved without a change"
 
 
 class TaskStore:
@@ -304,6 +344,11 @@ class TaskStore:
                 return False
             task.result_json = json.dumps(result)
             task.status = RESULT_RECEIVED
+            usage = result.get("usage")
+            if isinstance(usage, dict):
+                task.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                task.completion_tokens = int(usage.get("completion_tokens") or 0)
+                task.llm_calls = int(usage.get("calls") or 0)
             return True
 
     # -- flow runs ------------------------------------------------------------------------
@@ -408,6 +453,58 @@ class TaskStore:
                 s.execute(delete(Feedback).where(Feedback.id.in_(gone)))
             for kind, actor in current - stored:
                 s.add(Feedback(task_id=task.id, agent=task.agent, project_id=task.project_id, kind=kind, actor=actor))
+
+    # -- review memory ----------------------------------------------------------------------
+    def add_review_comments(self, task: Task, comments: list[dict[str, Any]]) -> None:
+        if not comments:
+            return
+        with self.Session() as s, s.begin():
+            for c in comments:
+                s.add(ReviewComment(task_id=task.id, agent=task.agent, project_id=task.project_id,
+                                    project_path=task.project_path, **c))
+
+    def sync_review_reactions(self, task_id: str, counts: dict[int, tuple[int, int]]) -> None:
+        """Set 👍/👎 counts {note_id: (up, down)} on a task's review comments."""
+        if not counts:
+            return
+        with self.Session() as s, s.begin():
+            for row in s.scalars(select(ReviewComment).where(ReviewComment.task_id == task_id,
+                                                             ReviewComment.note_id.in_(list(counts)))):
+                row.up, row.down = counts[row.note_id]
+                row.refresh()
+
+    def unresolved_review_comments(self, since: datetime, limit: int = 1000) -> list[ReviewComment]:
+        with self.Session() as s:
+            return list(s.scalars(select(ReviewComment).where(ReviewComment.created_at >= since,
+                                                              ReviewComment.resolved == false())
+                                  .order_by(ReviewComment.created_at.desc()).limit(limit)))
+
+    def mark_review_resolved(self, comment_id: int, unchanged: bool) -> None:
+        with self.Session() as s, s.begin():
+            row = s.get(ReviewComment, comment_id)
+            if row is not None:
+                row.resolved, row.unchanged = True, unchanged
+                row.refresh()
+
+    def dismissed_review_comments(self, project_id: int, agent: str | None = None,
+                                  limit: int = 20) -> list[ReviewComment]:
+        """The most recent comments the team dismissed in a project (for one agent, when given)."""
+        with self.Session() as s:
+            q = select(ReviewComment).where(ReviewComment.project_id == project_id, ReviewComment.dismissed.is_(True))
+            if agent:
+                q = q.where(ReviewComment.agent == agent)
+            return list(s.scalars(q.order_by(ReviewComment.created_at.desc()).limit(limit)))
+
+    def review_comments_since(self, since: datetime, project_path: str | None = None) -> list[ReviewComment]:
+        with self.Session() as s:
+            q = select(ReviewComment).where(ReviewComment.created_at >= since)
+            if project_path:
+                q = q.where(ReviewComment.project_path == project_path)
+            return list(s.scalars(q))
+
+    def delete_review_comment(self, comment_id: int) -> bool:
+        with self.Session() as s, s.begin():
+            return s.execute(delete(ReviewComment).where(ReviewComment.id == comment_id)).rowcount > 0
 
     def feedback_for(self, task_ids: Collection[str]) -> list[Feedback]:
         if not task_ids:

@@ -7,7 +7,7 @@ output: review
 max_attempts: 1
 timeout_minutes: 20
 context_budget_tokens: 32000
-context: [mr, mr_diff]
+context: [mr, mr_diff, review_memory]
 tools: [get_issue, get_merge_request, list_mr_discussions, list_pipelines, get_pipeline_jobs, get_job_log]
 prompts:
   main: code-reviewer.md.j2

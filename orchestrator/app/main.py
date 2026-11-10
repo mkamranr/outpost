@@ -49,6 +49,7 @@ class SandboxResult(BaseModel):
     comments: list[ReviewComment] = Field(default_factory=list)
     diff: str = ""
     error: str | None = None
+    usage: dict[str, int] | None = None  # prompt_tokens / completion_tokens / calls
     conflicts: list[str] = Field(default_factory=list)  # conflict-resolver: files that had merge conflicts
 
 
@@ -126,10 +127,25 @@ def create_app(platform: Platform) -> FastAPI:
                 "id": t.id, "agent": t.agent, "project": t.project_path, "status": t.status,
                 "command": t.command, "outcome": t.outcome, "error": t.error,
                 "sandbox_pipeline_id": t.sandbox_pipeline_id,
+                "prompt_tokens": t.prompt_tokens, "completion_tokens": t.completion_tokens, "llm_calls": t.llm_calls,
                 "created_at": t.created_at.isoformat(), "updated_at": t.updated_at.isoformat(),
             }
             for t in platform.store.recent(min(limit, 500))
         ]
+
+    @app.get("/api/review-memory")
+    def list_review_memory(project_id: int, limit: int = 50, _: None = Depends(require_admin)) -> list[dict[str, Any]]:
+        """The dismissed review comments a project's reviewer is told not to repeat."""
+        return [{"id": c.id, "agent": c.agent, "mr_iid": c.mr_iid, "path": c.path, "line": c.line, "body": c.body,
+                 "why": c.why, "up": c.up, "down": c.down, "created_at": c.created_at.isoformat()}
+                for c in platform.store.dismissed_review_comments(project_id, limit=min(limit, 500))]
+
+    @app.delete("/api/review-memory/{comment_id}")
+    def forget_review_comment(comment_id: int, _: None = Depends(require_admin)) -> dict[str, bool]:
+        """Drop a comment from review memory (the reviewer was right after all)."""
+        if not platform.store.delete_review_comment(comment_id):
+            raise HTTPException(status_code=404, detail="no such review comment")
+        return {"deleted": True}
 
     @app.get("/api/tasks/{task_id}/fixture")
     def export_fixture(task_id: str, name: str = "", _: None = Depends(require_admin)) -> Response:

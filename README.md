@@ -96,6 +96,12 @@ These lightweight agents run **inside the orchestrator**, like chat. They answer
 * **`release-notes`** groups the commits and merge requests between two refs into Features, Fixes, Breaking
   changes and Security, for example `@agent release-notes v1.2.0..v1.3.0`.
 
+### Team instructions
+
+Put your conventions, review focus and architecture notes in `.gitlab/agent-instructions.md` on the default
+branch, and every agent reads them. MRs can't change the instructions before they are merged, and no agent can
+edit the file. See [docs/agents.md](docs/agents.md#team-instructions-gitlabagent-instructionsmd).
+
 ### Custom agents
 
 If the platform admin allows it for a project (`custom_agents` in `projects.yaml`), teams can add their own
@@ -110,11 +116,15 @@ Outpost records whether agent work helped:
 * 👍 / 👎 on the agents' notes and MRs, polled every `FEEDBACK_POLL_SECONDS`. Withdrawn reactions are removed.
 * agent MRs merged, or closed without merging
 * pipelines going green on agent branches
+* inline review comments the team dismissed (👎, or resolved without a change). The reviewer is shown them
+  next time, so it learns the team's taste instead of repeating itself
+  ([review memory](docs/agents.md#review-memory))
 
 Use these numbers to compare prompt, model and engine changes on real work.
 
 `/admin` is a server-rendered page with no JavaScript or CDN. It shows each agent's task counts, failures, MR
-acceptance rate, reactions, median duration and tool use, plus running flows, queue depth and recent tasks.
+acceptance rate, reactions, median duration, tool use and LLM tokens, plus running flows, queue depth and
+recent tasks.
 `/metrics` serves the same numbers in Prometheus format. Both need the admin token: browsers use HTTP Basic
 with any user name and the token as the password, and Prometheus uses `Authorization: Bearer`. Failed or 👎
 tasks can be exported as [eval fixtures](docs/agents.md#turning-real-failures-into-fixtures), so real failures
@@ -133,6 +143,7 @@ python eval/export_task.py --url https://outpost.internal --token "$ADMIN_TOKEN"
 | `GET /admin` | admin token (HTTP Basic) | dashboard |
 | `GET /metrics` | admin token (Bearer) | Prometheus metrics |
 | `GET /api/tasks` | admin token | recent tasks as JSON |
+| `GET /api/review-memory?project_id=` / `DELETE /api/review-memory/{id}` | admin token | list or forget dismissed review comments |
 | `GET /api/tasks/{id}/fixture` | admin token | a task as an eval fixture (`.tar.gz`) |
 | `GET /healthz` | none | liveness and the loaded agents |
 
