@@ -173,8 +173,12 @@ class GitLab:
     def issues(self, project: int | str, **params: Any) -> list[dict[str, Any]]:
         return self.get(f"/projects/{_pid(project)}/issues", **params)
 
-    def merge_request(self, project: int | str, iid: int) -> dict[str, Any]:
-        return self.get(f"/projects/{_pid(project)}/merge_requests/{iid}")
+    def merge_request(self, project: int | str, iid: int, **params: Any) -> dict[str, Any]:
+        return self.get(f"/projects/{_pid(project)}/merge_requests/{iid}", **params)
+
+    def rebase_merge_request(self, project: int | str, iid: int) -> Any:
+        """GitLab's own rebase of the source branch onto the target (asynchronous; fails on conflicts)."""
+        return self.put(f"/projects/{_pid(project)}/merge_requests/{iid}/rebase", {})
 
     def merge_request_diffs(self, project: int | str, iid: int) -> list[dict[str, Any]]:
         return self.get_all(f"/projects/{_pid(project)}/merge_requests/{iid}/diffs", max_pages=5)

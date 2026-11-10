@@ -65,8 +65,9 @@ def main(argv: list[str] | None = None) -> int:
             repo = args.repo_dir.resolve()
         else:
             repo = workdir / "repo"
+            merge = bundle["repo"].get("merge_target") or {}
             git_repo.clone(bundle["repo"]["http_url"], bundle["repo"]["sha"], repo, os.environ.get("CI_JOB_TOKEN"),
-                           ref=bundle["repo"].get("ref"))
+                           ref=bundle["repo"].get("ref"), merge_sha=merge.get("sha"), merge_ref=merge.get("ref"))
         runner = Runner(bundle, repo, workdir, LLMConfig.from_env(), deadline, remote=remote)
         result = runner.run()
     except Exception as exc:  # noqa: BLE001 - always report back, even on failure

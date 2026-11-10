@@ -48,7 +48,9 @@ any case fails.
 ## Case format
 
 A case is `eval/fixtures/<name>/case.yaml`, plus a `repo/` directory for agents that edit or read code. The
-harness copies `repo/` into a fresh git repository for every run. Inline agents (`chat`, `mr-describer`,
+harness copies `repo/` into a fresh git repository for every run. Conflict-resolver cases also have
+`source/` and `target/`: files laid over `repo/` (the merge base) and committed as two branches, with the
+source checked out and the target passed as the merge target. Inline agents (`chat`, `mr-describer`,
 `release-notes`, `issue-triage`) need no `repo/`.
 
 ```yaml
@@ -80,6 +82,7 @@ draft: true                         # optional: skipped unless --include-drafts
 | `comment_on` | A review comment is on this file |
 | `handoff` | Chat handed off to this agent or flow |
 | `tools_used` | Every listed tool was called |
+| `no_conflict_markers` | The run reported conflicted files and none of them still has `<<<<<<<` / `>>>>>>>` lines |
 | `labels` | Triage suggested all of these labels |
 | `duplicate_of` | Triage named this issue as a duplicate |
 

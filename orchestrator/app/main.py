@@ -50,6 +50,7 @@ class SandboxResult(BaseModel):
     diff: str = ""
     error: str | None = None
     usage: dict[str, int] | None = None  # prompt_tokens / completion_tokens / calls
+    conflicts: list[str] = Field(default_factory=list)  # conflict-resolver: files that had merge conflicts
 
 
 def create_app(platform: Platform) -> FastAPI:

@@ -17,6 +17,7 @@ then restart.
 | `security-analyst` | readonly / llm | `note` | `mr`, `mr_diff` | `security` |
 | `test-writer` | edit / aider | `mr_commit` | `mr`, `mr_diff` | `tests`, `test` |
 | `security-remediator` | edit / aider | `security_fix` | `vulnerabilities` | `remediate`; green pipeline (opt-in) |
+| `conflict-resolver` | edit / aider | `conflict_resolution` | `mr`, `mr_diff` | `rebase`, `resolve-conflicts` |
 | `chat` | readonly / inline | `chat` | `subject`, `discussion` | `chat`, `ask`, any other text |
 | `mr-describer` | readonly / inline | `mr_description` | `mr`, `mr_diff`, `linked_issues` | MR open; `describe` |
 | `release-notes` | readonly / inline | `note` | `ref_range` | `release-notes <from>..<to>` |
@@ -160,6 +161,27 @@ The output handler, not the model, decides what reaches GitLab. Triage drops lab
 `agent::*` labels, and keeps only duplicates that exist. The MR description handler strips the marker comments
 from the model's text, so it can't write outside its block. Automatic `mr-describer` runs skip descriptions
 the author already wrote before any model call.
+
+## Conflict resolver
+
+`@agent rebase` on a merge request brings it up to date with its target branch:
+
+* **Behind but no conflicts.** On `agent/*` branches (or with `allow_push_to_mr_branch`) the orchestrator calls
+  GitLab's rebase API and reports the result. No sandbox or model is used. On branches people own, it points to
+  GitLab's **Rebase** button instead, because agents don't rewrite human branches.
+* **Conflicts.** The sandbox also fetches the target branch and runs `git merge --no-commit`. The engine then
+  resolves the files with conflict markers, and the project's tests run. An attempt fails while any
+  `<<<<<<<` / `>>>>>>>` line is left. The result, diffed against the target head, is committed to
+  `agent/conflict-resolver-mr-<iid>-…` cut from the target. That becomes a **replacement Draft MR**, linked from
+  the original. Nothing on the original branch changes, and a human decides which MR to merge.
+* **Limits.** The Commits API can't write merge commits, so the replacement squashes the MR's history into one
+  commit. The run is refused up front when the MR touches more than 50 files compared with the target, or
+  touches protected paths: the replacement couldn't carry those changes. CI files go through the same checks as
+  every other agent's changes. Fork MRs, closed MRs and MRs GitLab is still checking are answered without
+  running anything.
+
+The eval case `eval/fixtures/merge-conflict-basic` shows the fixture layout for merges: `repo/` is the merge
+base, and `source/` and `target/` are the two sides.
 
 ## Security remediator
 

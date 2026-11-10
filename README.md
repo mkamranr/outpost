@@ -30,6 +30,7 @@ sandbox.
 | `mr-describer` | MR opened with an empty description (automatic); `@agent describe` | what / why / how to test / risks, in a marked block of the description |
 | `release-notes` | `@agent release-notes v1.2.0..v1.3.0` on an issue or MR | grouped release notes from the commits and MRs in the range |
 | `issue-triage` | issue opened (automatic, any author); `@agent triage` | suggested labels, likely duplicates, questions for the reporter |
+| `conflict-resolver` | `@agent rebase` / `@agent resolve-conflicts` on an MR | GitLab rebase when there are no conflicts; otherwise conflicts resolved and tested in a replacement Draft MR |
 
 `@agent help` lists the agents and flows enabled for a project. Each agent runs only in projects that list it
 under `agents:` in `projects.yaml`. Agents are YAML + prompt templates in [`agents/`](agents); see

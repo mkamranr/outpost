@@ -181,6 +181,37 @@ def mr_commit(ctx: OutputContext) -> str:
     return new_mr.get("web_url", f"!{new_mr['iid']}")
 
 
+@handler("conflict_resolution")
+def conflict_resolution(ctx: OutputContext) -> str:
+    """Open the resolved merge as a replacement Draft MR cut from the target branch; never touch the original."""
+    r, t = ctx.result, ctx.target
+    merge = ctx.bundle.get("repo", {}).get("merge_target") or {}
+    if r.get("status") != "success" or not r.get("changes") or not merge:
+        ctx.notify(failure_message(ctx, "I could not resolve the merge conflicts."))
+        return "failed"
+    pid, iid = t["project_id"], t["iid"]
+    mr = ctx.gl.merge_request(pid, iid)
+    actions = _actions(ctx)
+    _lint_ci(ctx, actions, merge["ref"])
+    original = re.sub(r"^(Draft:|\[Draft\]|\(Draft\)|WIP:)\s*", "", mr.get("title") or "", flags=re.I)
+    title = sanitize(f"{original} (conflicts resolved)", 200).splitlines()[0]
+    files = r.get("conflicts") or []
+    listed = "\n".join(f"- `{sanitize(str(f), 300)}`" for f in files[:50]) or "_none reported_"
+    new_mr = _open_mr(
+        ctx, actions=actions, branch=ctx.branch_name(f"mr-{iid}"), start_sha=merge["sha"], target_branch=merge["ref"],
+        title=title,
+        intro=(f"Replaces !{iid}: the same changes on top of `{merge['ref']}` ({merge['sha'][:8]}), with the merge "
+               f"conflicts resolved. The history of `{mr['source_branch']}` is squashed into one commit.\n\n"
+               f"**Conflicts resolved in:**\n{listed}"),
+    )
+    ctx.produced = {"ok": True, "mr_iid": new_mr["iid"], "summary": sanitize(r.get("summary") or "", 3000)}
+    ctx.notify(f"I resolved the conflicts with `{merge['ref']}` in !{new_mr['iid']}, a replacement for this merge "
+               f"request. Review it there; if it looks right, merge it and close this one. Nothing on "
+               f"`{mr['source_branch']}` was changed.\n\n**Conflicts resolved in:**\n{listed}\n\n"
+               f"{sanitize(r.get('summary') or '')}\n\n{ctx.attempts_markdown()}")
+    return new_mr.get("web_url", f"!{new_mr['iid']}")
+
+
 @handler("note")
 def note(ctx: OutputContext) -> str:
     r = ctx.result
