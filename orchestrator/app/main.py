@@ -132,6 +132,20 @@ def create_app(platform: Platform) -> FastAPI:
             for t in platform.store.recent(min(limit, 500))
         ]
 
+    @app.get("/api/review-memory")
+    def list_review_memory(project_id: int, limit: int = 50, _: None = Depends(require_admin)) -> list[dict[str, Any]]:
+        """The dismissed review comments a project's reviewer is told not to repeat."""
+        return [{"id": c.id, "agent": c.agent, "mr_iid": c.mr_iid, "path": c.path, "line": c.line, "body": c.body,
+                 "why": c.why, "up": c.up, "down": c.down, "created_at": c.created_at.isoformat()}
+                for c in platform.store.dismissed_review_comments(project_id, limit=min(limit, 500))]
+
+    @app.delete("/api/review-memory/{comment_id}")
+    def forget_review_comment(comment_id: int, _: None = Depends(require_admin)) -> dict[str, bool]:
+        """Drop a comment from review memory (the reviewer was right after all)."""
+        if not platform.store.delete_review_comment(comment_id):
+            raise HTTPException(status_code=404, detail="no such review comment")
+        return {"deleted": True}
+
     @app.get("/api/tasks/{task_id}/fixture")
     def export_fixture(task_id: str, name: str = "", _: None = Depends(require_admin)) -> Response:
         """Download a finished task as an eval fixture (tar.gz of <name>/case.yaml and <name>/repo/)."""

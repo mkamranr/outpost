@@ -115,6 +115,9 @@ Outpost records whether agent work helped:
 * 👍 / 👎 on the agents' notes and MRs, polled every `FEEDBACK_POLL_SECONDS`. Withdrawn reactions are removed.
 * agent MRs merged, or closed without merging
 * pipelines going green on agent branches
+* inline review comments the team dismissed (👎, or resolved without a change). The reviewer is shown them
+  next time, so it learns the team's taste instead of repeating itself
+  ([review memory](docs/agents.md#review-memory))
 
 Use these numbers to compare prompt, model and engine changes on real work.
 
@@ -139,6 +142,7 @@ python eval/export_task.py --url https://outpost.internal --token "$ADMIN_TOKEN"
 | `GET /admin` | admin token (HTTP Basic) | dashboard |
 | `GET /metrics` | admin token (Bearer) | Prometheus metrics |
 | `GET /api/tasks` | admin token | recent tasks as JSON |
+| `GET /api/review-memory?project_id=` / `DELETE /api/review-memory/{id}` | admin token | list or forget dismissed review comments |
 | `GET /api/tasks/{id}/fixture` | admin token | a task as an eval fixture (`.tar.gz`) |
 | `GET /healthz` | none | liveness and the loaded agents |
 
