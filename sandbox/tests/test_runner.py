@@ -224,3 +224,70 @@ def test_edit_agent_investigates_before_editing(tmp_path):
     assert result["status"] == "success"
     first_instruction, first_files = engine.instructions[0]
     assert "add() adds an extra 1" in first_instruction and first_files[0] == "src/calc.py"
+
+
+# -- LLM usage ---------------------------------------------------------------------------
+
+class MeteredLLM(ScriptedLLM):
+    """A ScriptedLLM whose endpoint reports token usage on every reply."""
+
+    def _next(self, payload):
+        reply = super()._next(payload)
+        reply["usage"] = {"prompt_tokens": 1000, "completion_tokens": 50, "total_tokens": 1050}
+        return reply
+
+
+def test_llm_sums_usage_over_calls():
+    llm = MeteredLLM(["one", "two"])
+    llm.chat([{"role": "user", "content": "a"}])
+    llm.chat([{"role": "user", "content": "b"}])
+    assert llm.usage == {"prompt_tokens": 2000, "completion_tokens": 100, "calls": 2}
+    plain = ScriptedLLM(["no usage field"])
+    plain.chat([{"role": "user", "content": "a"}])
+    assert plain.usage == {"prompt_tokens": 0, "completion_tokens": 0, "calls": 1}
+
+
+def test_result_reports_runner_and_engine_usage(tmp_path):
+    repo, sha = make_repo(tmp_path)
+    llm = MeteredLLM([
+        '{"classification": "code", "reason": "off by one", "suspect_files": ["src/calc.py"]}',
+        '{"title": "Fix add()", "summary": "Removed the +1."}',
+    ])
+
+    class MeteredEngine(FixingEngine):
+        def run(self, repo, instruction, files, attempt, timeout):
+            super().run(repo, instruction, files, attempt, timeout)
+            return EngineRun(ok=True, usage={"prompt_tokens": 7000, "completion_tokens": 300, "calls": 2})
+
+    work = tmp_path / "work"
+    work.mkdir()
+    result = Runner(bundle(sha), repo, work, llm.config, time.time() + 600, llm=llm, engine=MeteredEngine()).run()
+    # classify + describe through the runner's LLM, two engine attempts with two calls each.
+    assert len(result["attempts"]) == 2
+    assert result["usage"] == {"prompt_tokens": 2000 + 2 * 7000, "completion_tokens": 100 + 2 * 300, "calls": 6}
+
+
+def test_aider_usage_is_parsed_from_its_output():
+    from agent_runner.engines.aider import parse_usage
+
+    out = ("Applied edit to src/calc.py\n"
+           "Tokens: 12k sent, 345 received.\n"
+           "Tokens: 1,234 sent, 1.2k cache hit, 2.5k received. Cost: $0.00 message, $0.00 session.\n"
+           "some other line mentioning Tokens: 5 sent, 5 received\n")
+    assert parse_usage(out) == {"prompt_tokens": 13234, "completion_tokens": 2845, "calls": 2}
+    assert parse_usage("") == {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+
+
+def test_mini_swe_usage_from_messages():
+    from agent_runner.engines.mini_swe import message_usage
+
+    class Agent:
+        messages = [{"role": "user", "content": "task"},
+                    {"role": "assistant", "content": "x", "extra": {"response": {
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 2}}}}]
+    assert message_usage(Agent()) == {"prompt_tokens": 10, "completion_tokens": 2, "calls": 1}
+
+    class Old:
+        messages = [{"role": "assistant", "content": "x"}]
+        model = type("M", (), {"n_calls": 3})()
+    assert message_usage(Old()) == {"prompt_tokens": 0, "completion_tokens": 0, "calls": 3}

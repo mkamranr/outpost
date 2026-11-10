@@ -17,6 +17,7 @@ from .events import Event
 from .gitlab_client import DEVELOPER, GitLab
 from .outputs.common import OutputContext, sanitize
 from .registry import AgentDef, Registry
+from .repofiles import INSTRUCTIONS_FILE, DefaultBranchFiles, instructions_block
 from .router import route
 from .tasks import (ACTIVE, DISPATCHED, DISPATCHING, DONE, FAILED, QUEUED, RESULT_RECEIVED, Task, TaskStore,
                     utcnow)
@@ -38,7 +39,8 @@ class Platform:
             lambda ref: GitLab(settings.gitlab_url, settings.read_secret(ref), verify=settings.tls_ca_file or True)
         )
         self._clients: dict[str, GitLab] = {}
-        self.catalog = CatalogCache(registry)
+        self.repo_files = DefaultBranchFiles()
+        self.catalog = CatalogCache(registry, self.repo_files)
         self.flows = flows.FlowEngine(self)
         self._llm = llm_factory or inline.llm_factory(settings)
         self._inline_pool = ThreadPoolExecutor(settings.chat_workers, "inline") if settings.chat_workers > 0 else None
@@ -293,7 +295,7 @@ class Platform:
             "catalog": self.enabled_catalog(t["project_id"], cfg) if agent.output == "chat" else [],
         }
         prompts = {role: self.registry.render(agent, role, variables) for role in agent.prompts}
-        prompts["main"] += self.flows.context_for(task)
+        prompts["main"] += self.team_instructions(gl, t["project_id"]) + self.flows.context_for(task)
         bundle = {
             "task_id": task.id,
             "agent": {
@@ -313,6 +315,14 @@ class Platform:
             "tools": tools.schemas(agent.tools),
         }
         return bundle, cfg, ""
+
+    def team_instructions(self, gl: GitLab, project_id: int) -> str:
+        """`.gitlab/agent-instructions.md` from the default branch, as a prompt section (best effort)."""
+        try:
+            return instructions_block(self.repo_files.text(gl, project_id, INSTRUCTIONS_FILE))
+        except Exception:  # noqa: BLE001 - instructions are optional context
+            log.warning("project %s: could not read %s", project_id, INSTRUCTIONS_FILE, exc_info=True)
+            return ""
 
     def dispatch(self, task: Task) -> None:
         agent = self.agent_for(task)

@@ -95,6 +95,12 @@ These lightweight agents run **inside the orchestrator**, like chat. They answer
 * **`release-notes`** groups the commits and merge requests between two refs into Features, Fixes, Breaking
   changes and Security, for example `@agent release-notes v1.2.0..v1.3.0`.
 
+### Team instructions
+
+Put your conventions, review focus and architecture notes in `.gitlab/agent-instructions.md` on the default
+branch, and every agent reads them. MRs can't change the instructions before they are merged, and no agent can
+edit the file. See [docs/agents.md](docs/agents.md#team-instructions-gitlabagent-instructionsmd).
+
 ### Custom agents
 
 If the platform admin allows it for a project (`custom_agents` in `projects.yaml`), teams can add their own
@@ -116,7 +122,8 @@ Outpost records whether agent work helped:
 Use these numbers to compare prompt, model and engine changes on real work.
 
 `/admin` is a server-rendered page with no JavaScript or CDN. It shows each agent's task counts, failures, MR
-acceptance rate, reactions, median duration and tool use, plus running flows, queue depth and recent tasks.
+acceptance rate, reactions, median duration, tool use and LLM tokens, plus running flows, queue depth and
+recent tasks.
 `/metrics` serves the same numbers in Prometheus format. Both need the admin token: browsers use HTTP Basic
 with any user name and the token as the password, and Prometheus uses `Authorization: Bearer`. Failed or 👎
 tasks can be exported as [eval fixtures](docs/agents.md#turning-real-failures-into-fixtures), so real failures

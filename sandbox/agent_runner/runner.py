@@ -10,7 +10,7 @@ from typing import Any
 from . import repo as git_repo
 from .engines import get_engine
 from .explore import explore
-from .llm import LLM, LLMConfig, extract_json
+from .llm import LLM, LLMConfig, add_usage, extract_json, new_usage
 from .remote import RemoteTools
 
 log = logging.getLogger("agent_runner")
@@ -56,6 +56,7 @@ class Runner:
         self.llm = llm or LLM(llm_config)
         self.deadline = deadline
         self._engine = engine
+        self.engine_usage = new_usage()
         self.result: dict[str, Any] = {"status": "failed", "summary": "", "attempts": [], "changes": [], "comments": []}
 
     def remaining(self) -> float:
@@ -170,6 +171,7 @@ class Runner:
                 self.result["attempts"].append({"n": n, "tests_passed": None, "note": "out of time"})
                 break
             run = engine.run(self.repo, instruction, files, n, timeout=self.remaining() - 90)
+            add_usage(self.engine_usage, run.usage)
             if not git_repo.has_changes(self.repo):
                 self.result["attempts"].append({"n": n, "tests_passed": None, "note": "engine made no changes",
                                                 "test_output_tail": _tail(run.log_tail, 1500)})
@@ -203,8 +205,12 @@ class Runner:
         self.result.update(title=described["title"], summary=summary, status="success" if passed is not False else "failed")
         return self.result
 
+    def usage(self) -> dict[str, int]:
+        """LLM usage of this run: the runner's own calls (classify, investigate, explore, describe) and the engine's."""
+        return add_usage(add_usage(new_usage(), self.llm.usage), self.engine_usage)
+
     def run(self) -> dict[str, Any]:
         self.setup()
-        if self.agent["mode"] == "readonly":
-            return self.run_readonly()
-        return self.run_edit()
+        result = self.run_readonly() if self.agent["mode"] == "readonly" else self.run_edit()
+        result["usage"] = self.usage()
+        return result

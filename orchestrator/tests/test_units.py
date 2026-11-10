@@ -167,7 +167,8 @@ def test_repo_overrides_can_only_narrow():
     assert merged.agents == ["planner"]  # code-writer was never enabled by the admin
     assert merged.sandbox_image == "registry.internal/a:1"  # untrusted registry ignored
     assert set(merged.protected_paths) == {".gitlab/agent.yml", ".gitlab/agents/",
-                                         ".gitlab/agent-security-ignore.yml", "migrations/"}
+                                         ".gitlab/agent-security-ignore.yml", ".gitlab/agent-instructions.md",
+                                         "migrations/"}
     assert merged.test == ["make test"]
     assert merged.custom_agents.enabled is False  # a repo cannot turn custom agents on
 

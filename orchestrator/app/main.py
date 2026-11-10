@@ -49,6 +49,7 @@ class SandboxResult(BaseModel):
     comments: list[ReviewComment] = Field(default_factory=list)
     diff: str = ""
     error: str | None = None
+    usage: dict[str, int] | None = None  # prompt_tokens / completion_tokens / calls
 
 
 def create_app(platform: Platform) -> FastAPI:
@@ -125,6 +126,7 @@ def create_app(platform: Platform) -> FastAPI:
                 "id": t.id, "agent": t.agent, "project": t.project_path, "status": t.status,
                 "command": t.command, "outcome": t.outcome, "error": t.error,
                 "sandbox_pipeline_id": t.sandbox_pipeline_id,
+                "prompt_tokens": t.prompt_tokens, "completion_tokens": t.completion_tokens, "llm_calls": t.llm_calls,
                 "created_at": t.created_at.isoformat(), "updated_at": t.updated_at.isoformat(),
             }
             for t in platform.store.recent(min(limit, 500))
