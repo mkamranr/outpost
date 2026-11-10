@@ -35,6 +35,8 @@ class OutputContext:
     handoff: Callable[[str, str], str] | None = None
     # Ids of notes posted on the subject issue/MR, so people's reactions to them count as feedback.
     notes: list[int] = field(default_factory=list)
+    # Inline review comments posted (note and discussion ids, path, line, body), for review memory.
+    review_comments: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def target(self) -> dict[str, Any]:

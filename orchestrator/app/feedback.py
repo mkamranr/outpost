@@ -4,6 +4,9 @@ Signals, per task:
 - 👍 / 👎 award emoji on the notes and MRs the task posted (polled; reactions can be withdrawn)
 - the agent's MR was merged, or closed without merging
 - a pipeline on the agent's branch went green after the agent's commit
+
+Per inline review comment (review memory): its 👍 / 👎, and whether its thread was resolved without the file
+changing. Dismissed comments are shown to the reviewer next time so it stops repeating them.
 """
 from __future__ import annotations
 
@@ -110,6 +113,7 @@ class ReactionPoller:
                 continue
             gl = p.project_gl(cfg)
             current: set[tuple[str, str]] = set()
+            per_note: dict[int, tuple[int, int]] = {}
             complete = True
             for link in links:
                 try:
@@ -120,15 +124,63 @@ class ReactionPoller:
                 except Exception:  # noqa: BLE001 - deleted notes, lost access: keep what we had
                     complete = False
                     continue
+                mine: set[tuple[str, str]] = set()
                 for award in awards or []:
                     kind = EMOJI.get(str(award.get("name")))
                     actor = str((award.get("user") or {}).get("username") or "")
                     if kind and actor and actor != p.settings.bot_username:
-                        current.add((kind, actor))
+                        mine.add((kind, actor))
+                current |= mine
+                if link.kind == "note":
+                    per_note[link.ref_id] = (sum(k == THUMBS_UP for k, _ in mine), sum(k == THUMBS_DOWN for k, _ in mine))
+            p.store.sync_review_reactions(task_id, per_note)
             if complete:
                 p.store.sync_reactions(task, current)
             else:
                 for kind, actor in current:
                     p.store.add_feedback(task, kind, actor)
             synced += 1
+        try:
+            self.poll_resolutions(since)
+        except Exception:  # noqa: BLE001 - review memory is best effort
+            log.exception("polling review threads failed")
         return synced
+
+    def poll_resolutions(self, since: Any) -> int:
+        """Mark review comments whose thread was resolved, noting whether the commented file changed since.
+
+        A thread resolved while the file is untouched usually means the team disagreed with the comment; it then
+        counts as dismissed and the reviewer is told not to repeat it. Returns the number of comments resolved.
+        """
+        p = self.platform
+        by_mr: dict[tuple[str, int, int], list[Any]] = defaultdict(list)
+        for row in p.store.unresolved_review_comments(since):
+            by_mr[(row.project_path, row.project_id, row.mr_iid)].append(row)
+        resolved = 0
+        for (path, project_id, iid), rows in by_mr.items():
+            cfg = p.projects.for_project(path)
+            if cfg is None:
+                continue
+            gl = p.project_gl(cfg)
+            try:
+                threads = {str(d.get("id")): d for d in gl.discussions(project_id, "merge_request", iid)}
+            except Exception:  # noqa: BLE001 - deleted MR, lost access
+                continue
+            head = None
+            compared: dict[str, set[str]] = {}
+            for row in rows:
+                notes = (threads.get(row.discussion_id) or {}).get("notes") or []
+                if not notes or not notes[0].get("resolved"):
+                    continue
+                if head is None:
+                    head = gl.merge_request(project_id, iid).get("sha") or ""
+                if row.head_sha == head:
+                    changed = set()
+                else:
+                    if row.head_sha not in compared:
+                        diffs = gl.compare(project_id, row.head_sha, head).get("diffs") or []
+                        compared[row.head_sha] = {d.get(k) for d in diffs for k in ("new_path", "old_path")}
+                    changed = compared[row.head_sha]
+                p.store.mark_review_resolved(row.id, unchanged=row.path not in changed)
+                resolved += 1
+        return resolved
