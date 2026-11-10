@@ -58,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
              bundle["repo"]["path"], bundle["repo"]["sha"][:8])
 
     result: dict[str, Any]
+    runner: Runner | None = None
     workdir = Path(tempfile.mkdtemp(prefix="agent-"))
     try:
         if args.repo_dir:
@@ -66,10 +67,13 @@ def main(argv: list[str] | None = None) -> int:
             repo = workdir / "repo"
             git_repo.clone(bundle["repo"]["http_url"], bundle["repo"]["sha"], repo, os.environ.get("CI_JOB_TOKEN"),
                            ref=bundle["repo"].get("ref"))
-        result = Runner(bundle, repo, workdir, LLMConfig.from_env(), deadline, remote=remote).run()
+        runner = Runner(bundle, repo, workdir, LLMConfig.from_env(), deadline, remote=remote)
+        result = runner.run()
     except Exception as exc:  # noqa: BLE001 - always report back, even on failure
         log.error("agent failed: %s", traceback.format_exc())
         result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:2000], "summary": "", "attempts": []}
+        if runner is not None:
+            result["usage"] = runner.usage()  # tokens spent before the failure still count
 
     log.info("result: status=%s classification=%s changes=%d comments=%d", result.get("status"),
              result.get("classification"), len(result.get("changes") or []), len(result.get("comments") or []))

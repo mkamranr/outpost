@@ -44,11 +44,13 @@ def run(llm: LLM, bundle: dict[str, Any], invoke: Callable[[str, dict[str, Any]]
     kind = SUBMIT_KIND.get(agent["output"], "note")
     system = bundle["prompts"].get("system") or SYSTEM  # an agent may bring its own system prompt
     answer = explore(llm, None, bundle["prompts"]["main"], kind, deadline, max_turns=20, remote=remote, system=system)
+    usage = dict(llm.usage)
     if kind == "triage":
         return {"status": "success", "body": answer.get("summary") or "", "summary": answer.get("summary") or "",
-                "attempts": [], "changes": [], "triage": {k: answer.get(k) or [] for k in
-                                                          ("labels", "duplicates", "missing_info")}}
-    result: dict[str, Any] = {"status": "success", "body": answer["body"], "summary": "", "attempts": [], "changes": []}
+                "attempts": [], "changes": [], "usage": usage, "triage": {k: answer.get(k) or [] for k in
+                                                                          ("labels", "duplicates", "missing_info")}}
+    result: dict[str, Any] = {"status": "success", "body": answer["body"], "summary": "", "attempts": [], "changes": [],
+                              "usage": usage}
     if isinstance(answer.get("handoff"), dict):
         result["handoff"] = answer["handoff"]
     return result

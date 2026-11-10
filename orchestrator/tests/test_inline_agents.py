@@ -76,6 +76,7 @@ def test_reporter_opened_issue_is_triaged(env, fake):
     assert not fake.posted(r"/projects/42/issues/3$")  # labels are only suggested by default
     task = platform.store.recent()[0]
     assert task.agent == "issue-triage" and task.status == DONE
+    assert task.llm_calls == 1 and task.prompt_tokens == 0  # usage recorded for inline agents too
     prompt = llm.requests[0]["messages"][1]["content"]
     assert "| storage |" in prompt and "agent::plan" not in prompt
 

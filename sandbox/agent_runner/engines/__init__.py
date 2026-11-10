@@ -12,6 +12,7 @@ from ..llm import LLMConfig
 class EngineRun:
     ok: bool
     log_tail: str = ""
+    usage: dict[str, int] | None = None  # prompt_tokens / completion_tokens / calls, when the engine can tell
 
 
 class Engine(Protocol):
