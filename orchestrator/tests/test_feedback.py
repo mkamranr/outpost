@@ -131,3 +131,24 @@ def test_pipeline_event_keeps_commit_message():
                                     "commit": {"message": "msg"}})
     assert event.commit_message == "msg"
     assert "commit_message" not in event.target()
+
+
+def test_llm_usage_is_stored_and_shown(platform, fake):
+    client = TestClient(create_app(platform))
+    wire_pipeline_project(fake)
+    task_id, ticket = dispatch_and_get_ticket(platform, fake, client)
+    result = {"status": "success", "classification": "flaky", "summary": "network blip",
+              "usage": {"prompt_tokens": 41000, "completion_tokens": 900, "calls": 5}}
+    client.post(f"/api/tasks/{task_id}/result", json=result, headers={"Authorization": f"Bearer {ticket}"})
+    platform.run_once()
+    task = platform.store.get(task_id)
+    assert (task.prompt_tokens, task.completion_tokens, task.llm_calls) == (41000, 900, 5)
+
+    metrics = client.get("/metrics", headers={"Authorization": "Bearer admin"}).text
+    assert 'outpost_llm_tokens{agent="pipeline-fixer",type="prompt"} 41000' in metrics
+    assert 'outpost_llm_tokens{agent="pipeline-fixer",type="completion"} 900' in metrics
+    assert 'outpost_llm_calls{agent="pipeline-fixer"} 5' in metrics
+    page = client.get("/admin", headers={"Authorization": "Basic " + base64.b64encode(b"ops:admin").decode()}).text
+    assert "42k" in page  # 41,900 tokens for the agent and for the task row
+    listed = client.get("/api/tasks", headers={"X-Admin-Token": "admin"}).json()[0]
+    assert listed["prompt_tokens"] == 41000 and listed["llm_calls"] == 5

@@ -119,7 +119,8 @@ Outpost records whether agent work helped:
 Use these numbers to compare prompt, model and engine changes on real work.
 
 `/admin` is a server-rendered page with no JavaScript or CDN. It shows each agent's task counts, failures, MR
-acceptance rate, reactions, median duration and tool use, plus running flows, queue depth and recent tasks.
+acceptance rate, reactions, median duration, tool use and LLM tokens, plus running flows, queue depth and
+recent tasks.
 `/metrics` serves the same numbers in Prometheus format. Both need the admin token: browsers use HTTP Basic
 with any user name and the token as the password, and Prometheus uses `Authorization: Bearer`. Failed or 👎
 tasks can be exported as [eval fixtures](docs/agents.md#turning-real-failures-into-fixtures), so real failures

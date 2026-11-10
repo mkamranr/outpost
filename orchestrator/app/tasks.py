@@ -63,6 +63,9 @@ class Task(Base):
     flow_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     produced_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # what the output handler created
     tool_log_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # tool calls and results, for eval export
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)  # LLM usage reported by the run
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    llm_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     @property
     def target(self) -> dict[str, Any]:
@@ -304,6 +307,11 @@ class TaskStore:
                 return False
             task.result_json = json.dumps(result)
             task.status = RESULT_RECEIVED
+            usage = result.get("usage")
+            if isinstance(usage, dict):
+                task.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                task.completion_tokens = int(usage.get("completion_tokens") or 0)
+                task.llm_calls = int(usage.get("calls") or 0)
             return True
 
     # -- flow runs ------------------------------------------------------------------------

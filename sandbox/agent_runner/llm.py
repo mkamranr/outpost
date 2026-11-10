@@ -70,11 +70,27 @@ def extract_json(text: str) -> dict[str, Any] | None:
     return None
 
 
+TOKEN_KEYS = ("prompt_tokens", "completion_tokens")
+
+
+def new_usage() -> dict[str, int]:
+    return {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+
+
+def add_usage(total: dict[str, int], part: dict[str, int] | None) -> dict[str, int]:
+    """Add one usage dict (prompt_tokens, completion_tokens, calls) into another, in place."""
+    for key, value in (part or {}).items():
+        if key in total and isinstance(value, (int, float)):
+            total[key] += int(value)
+    return total
+
+
 class LLM:
     def __init__(self, config: LLMConfig, transport: Any = None):
         self.config = config
         self._transport = transport  # tests inject a callable(payload) -> response dict
         self._ctx = ssl.create_default_context(cafile=config.ca_file) if config.ca_file else None
+        self.usage = new_usage()  # summed over every chat() call, from the endpoint's `usage` field
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self._transport:
@@ -111,6 +127,7 @@ class LLM:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         data = self._post(payload)
+        add_usage(self.usage, {"calls": 1, **{k: (data.get("usage") or {}).get(k) or 0 for k in TOKEN_KEYS}})
         message = data["choices"][0]["message"]
         return Reply(
             content=strip_thinking(message.get("content")),
