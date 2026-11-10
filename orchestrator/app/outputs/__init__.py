@@ -240,7 +240,8 @@ def review(ctx: OutputContext) -> str:
     refs = ctx.gl.merge_request(pid, iid).get("diff_refs") or {}
     posted, unplaced = 0, []
     for c in (r.get("comments") or [])[:25]:
-        body = sanitize(c.get("body"), 4000) + ctx.footer()
+        text = sanitize(c.get("body"), 4000)
+        body = text + ctx.footer()
         try:
             line = int(c["line"])
             position = {
@@ -252,8 +253,13 @@ def review(ctx: OutputContext) -> str:
                 "old_path": c.get("old_path") or c["path"],
                 "new_line": line,
             }
-            ctx.remember(ctx.gl.create_mr_discussion(pid, iid, body, position))
+            created = ctx.remember(ctx.gl.create_mr_discussion(pid, iid, body, position))
             posted += 1
+            first = ((created or {}).get("notes") or [{}])[0] if isinstance(created, dict) else {}
+            if isinstance(first.get("id"), int) and created.get("id"):
+                ctx.review_comments.append({
+                    "mr_iid": iid, "note_id": first["id"], "discussion_id": str(created["id"]),
+                    "path": str(c["path"])[:1024], "line": line, "body": text[:1000], "head_sha": refs["head_sha"]})
         except Exception:  # noqa: BLE001 - lines outside the diff cannot be anchored; keep them in the summary
             unplaced.append(f"- `{c.get('path')}:{c.get('line')}` — {sanitize(c.get('body'), 1000)}")
     summary = sanitize(r.get("summary") or "Review complete.")

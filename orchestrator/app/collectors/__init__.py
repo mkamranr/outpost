@@ -25,15 +25,21 @@ class CollectContext:
     budget_tokens: int
     bot_username: str = ""
     instruction: str = ""  # the text after the command, e.g. a ref range for release notes
+    store: Any = None  # the TaskStore, for collectors that read what the platform learned (review memory)
+    agent: str = ""  # the agent the context is for
 
 
 Collector = Callable[[CollectContext], Any]
 COLLECTORS: dict[str, Collector] = {}
+# Collectors with a small fixed budget, taken off the top so they don't halve everyone else's share.
+FIXED_BUDGETS: dict[str, int] = {}
 
 
-def collector(name: str) -> Callable[[Collector], Collector]:
+def collector(name: str, budget: int | None = None) -> Callable[[Collector], Collector]:
     def wrap(fn: Collector) -> Collector:
         COLLECTORS[name] = fn
+        if budget is not None:
+            FIXED_BUDGETS[name] = budget
         return fn
     return wrap
 
@@ -52,13 +58,15 @@ def collect(names: list[str], ctx: CollectContext) -> dict[str, Any]:
     """Run the named collectors, splitting the budget evenly. Collector failures are recorded, not fatal."""
     if not names:
         return {}
-    share = max(ctx.budget_tokens // len(names), 500)
+    fixed = {n: min(FIXED_BUDGETS[n], ctx.budget_tokens // 4) for n in names if n in FIXED_BUDGETS}
+    shared = [n for n in names if n not in fixed]
+    share = max((ctx.budget_tokens - sum(fixed.values())) // max(len(shared), 1), 500)
     out: dict[str, Any] = {}
     for name in names:
         fn = COLLECTORS.get(name)
         if fn is None:
             raise KeyError(f"unknown collector {name}")
-        sub = replace(ctx, budget_tokens=share)
+        sub = replace(ctx, budget_tokens=fixed.get(name, share))
         try:
             out[name] = fn(sub)
         except Exception as exc:  # noqa: BLE001 - context is best effort
