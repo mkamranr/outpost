@@ -354,6 +354,13 @@ The dashboard (`/admin`) and `/metrics` show, per agent:
 * 👍 / 👎 on its comments
 * green pipelines on its branches
 * failures, median time and tool calls
+* LLM tokens (prompt / completion) and requests, in total and per task
+  (`outpost_llm_tokens{agent,type}`, `outpost_llm_calls{agent}`)
+
+Token usage comes from the `usage` field of every response from the OpenAI-compatible endpoint (the sandbox's own
+calls, inline agents) and from Aider's per-call `Tokens: … sent, … received` lines. For `mini-swe` it's best
+effort: if the installed release doesn't keep the raw responses, only the number of calls is counted. Tasks
+from before this was recorded show `–`. Use these numbers to size GPUs and to spot prompts that grow out of hand.
 
 After changing a prompt, model or engine, compare these for a week or two against the period before, next to
 the offline eval pass rate. A rise in 👎 or closed MRs is the cue to export those tasks as fixtures.

@@ -74,9 +74,15 @@ def compute(platform: "Platform", days: int, project: str | None = None) -> dict
     durations: dict[str, list[float]] = defaultdict(list)
     for t in tasks:
         a = agents.setdefault(t.agent, {"agent": t.agent, "total": 0, "done": 0, "failed": 0, "active": 0,
-                                        "merged": 0, "closed": 0, "green": 0, "up": 0, "down": 0, "tool_calls": 0})
+                                        "merged": 0, "closed": 0, "green": 0, "up": 0, "down": 0, "tool_calls": 0,
+                                        "prompt_tokens": 0, "completion_tokens": 0, "llm_calls": 0, "metered": 0})
         a["total"] += 1
         a["tool_calls"] += t.tool_calls or 0
+        if t.llm_calls is not None:  # tasks from before usage was recorded do not count towards averages
+            a["metered"] += 1
+            a["prompt_tokens"] += t.prompt_tokens or 0
+            a["completion_tokens"] += t.completion_tokens or 0
+            a["llm_calls"] += t.llm_calls
         if t.status == DONE:
             a["done"] += 1
         elif t.status == FAILED:
@@ -100,6 +106,8 @@ def compute(platform: "Platform", days: int, project: str | None = None) -> dict
         a["acceptance"] = round(100 * a["merged"] / decided) if decided else None
         a["median_seconds"] = round(median(durations[name])) if durations[name] else None
         a["avg_tool_calls"] = round(a["tool_calls"] / a["total"], 1) if a["total"] else 0
+        a["tokens"] = a["prompt_tokens"] + a["completion_tokens"]
+        a["avg_tokens"] = round(a["tokens"] / a["metered"]) if a["metered"] else None
     return {
         "agents": sorted(agents.values(), key=lambda a: (-a["total"], a["agent"])),
         "durations": durations,
@@ -150,6 +158,14 @@ def metrics_text(platform: "Platform", days: int = 30) -> str:
               "# TYPE outpost_tool_calls gauge"]
     for a in stats["agents"]:
         lines.append(f'outpost_tool_calls{{agent="{_label(a["agent"])}"}} {a["tool_calls"]}')
+    lines += ["# HELP outpost_llm_tokens LLM tokens used by tasks from the window, by agent and type.",
+              "# TYPE outpost_llm_tokens gauge"]
+    for a in stats["agents"]:
+        for kind in ("prompt", "completion"):
+            lines.append(f'outpost_llm_tokens{{agent="{_label(a["agent"])}",type="{kind}"}} {a[kind + "_tokens"]}')
+    lines += ["# HELP outpost_llm_calls LLM requests made by tasks from the window.", "# TYPE outpost_llm_calls gauge"]
+    for a in stats["agents"]:
+        lines.append(f'outpost_llm_calls{{agent="{_label(a["agent"])}"}} {a["llm_calls"]}')
     lines += ["# HELP outpost_queue_depth Tasks queued or running, by lane.", "# TYPE outpost_queue_depth gauge"]
     for lane, n in queue_depth(platform).items():
         lines.append(f'outpost_queue_depth{{lane="{lane}"}} {n}')
@@ -189,26 +205,30 @@ th{font-weight:600;color:var(--muted);font-size:12px}td.num,th.num{text-align:ri
 <div class="tile"><span class="muted">Failed</span><b class="{{ 'bad' if totals.failed else '' }}">{{ totals.failed }}</b></div>
 <div class="tile"><span class="muted">MR acceptance</span><b>{{ totals.acceptance if totals.acceptance is not none else '–' }}{% if totals.acceptance is not none %}%{% endif %}</b></div>
 <div class="tile"><span class="muted">👍 / 👎</span><b>{{ totals.up }} / {{ totals.down }}</b></div>
+<div class="tile"><span class="muted">LLM tokens · prompt / completion</span><b>{{ totals.prompt_tokens|tokens }} / {{ totals.completion_tokens|tokens }}</b></div>
 <div class="tile"><span class="muted">Queued · inline / sandbox</span><b>{{ queue.inline }} / {{ queue.sandbox }}</b></div>
 </div>
 <h2>Agents</h2>
 <div class="scroll"><table><tr><th>Agent</th><th class="num">Tasks</th><th class="num">Done</th><th class="num">Failed</th>
 <th class="num">Running</th><th class="num">MRs merged / closed</th><th class="num">Acceptance</th><th class="num">Green pipelines</th>
-<th class="num">👍</th><th class="num">👎</th><th class="num">Median time</th><th class="num">Avg tool calls</th></tr>
+<th class="num">👍</th><th class="num">👎</th><th class="num">Median time</th><th class="num">Avg tool calls</th>
+<th class="num">Tokens</th><th class="num">Avg tokens / task</th></tr>
 {% for a in agents %}<tr><td>{{ a.agent }}</td><td class="num">{{ a.total }}</td><td class="num">{{ a.done }}</td>
 <td class="num {{ 'bad' if a.failed else '' }}">{{ a.failed }}</td><td class="num">{{ a.active }}</td>
 <td class="num">{{ a.merged }} / {{ a.closed }}</td><td class="num">{{ a.acceptance ~ '%' if a.acceptance is not none else '–' }}</td>
 <td class="num">{{ a.green }}</td><td class="num good">{{ a.up }}</td><td class="num bad">{{ a.down }}</td>
-<td class="num">{{ a.median_seconds|duration }}</td><td class="num">{{ a.avg_tool_calls }}</td></tr>
-{% else %}<tr><td colspan="12" class="muted">No tasks in this window.</td></tr>{% endfor %}</table></div>
+<td class="num">{{ a.median_seconds|duration }}</td><td class="num">{{ a.avg_tool_calls }}</td>
+<td class="num">{{ a.tokens|tokens }}</td><td class="num">{{ a.avg_tokens|tokens }}</td></tr>
+{% else %}<tr><td colspan="14" class="muted">No tasks in this window.</td></tr>{% endfor %}</table></div>
 {% if flows %}<h2>Running flows</h2>
 <div class="scroll"><table><tr><th>Flow</th><th>Project</th><th>Status</th><th class="num">Step</th><th>Started</th></tr>
 {% for f in flows %}<tr><td>{{ f.flow }}</td><td>{{ f.project_path }}</td><td>{{ f.status }}</td><td class="num">{{ f.step + 1 }}</td>
 <td>{{ f.created_at.strftime('%Y-%m-%d %H:%M') }}</td></tr>{% endfor %}</table></div>{% endif %}
 <h2>Recent tasks</h2>
-<div class="scroll"><table><tr><th>Created (UTC)</th><th>Agent</th><th>Project</th><th>Status</th><th>Feedback</th><th>Outcome</th><th></th></tr>
+<div class="scroll"><table><tr><th>Created (UTC)</th><th>Agent</th><th>Project</th><th>Status</th><th>Feedback</th><th class="num">Tokens</th><th>Outcome</th><th></th></tr>
 {% for r in recent %}<tr><td>{{ r.task.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ r.task.agent }}</td><td>{{ r.task.project_path }}</td>
 <td class="{{ 'bad' if r.task.status == 'failed' else '' }}">{{ r.task.status }}</td><td>{{ r.badges }}</td>
+<td class="num">{{ r.tokens|tokens }}</td>
 <td class="wrap">{% if r.link %}<a href="{{ r.link }}">{{ r.link }}</a>{% else %}{{ r.text }}{% endif %}</td>
 <td>{% if r.exportable %}<a href="api/tasks/{{ r.task.id }}/fixture" title="Download as an eval fixture">Export fixture</a>{% endif %}</td></tr>
 {% endfor %}</table></div>
@@ -228,15 +248,28 @@ def _duration_filter(seconds: Any) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
+def _tokens_filter(n: Any) -> str:
+    if n is None:
+        return "–"
+    n = int(n)
+    if n < 10_000:
+        return str(n)
+    if n < 1_000_000:
+        return f"{n / 1000:.0f}k"
+    return f"{n / 1_000_000:.1f}M"
+
+
 _env = Environment(autoescape=True)
 _env.filters["duration"] = _duration_filter
+_env.filters["tokens"] = _tokens_filter
 _template = _env.from_string(TEMPLATE)
 
 
 def render(platform: "Platform", days: int, project: str | None) -> str:
     stats = compute(platform, days, project)
     agents = stats["agents"]
-    totals = {k: sum(a[k] for a in agents) for k in ("total", "failed", "merged", "closed", "up", "down")}
+    totals = {k: sum(a[k] for a in agents) for k in ("total", "failed", "merged", "closed", "up", "down",
+                                                     "prompt_tokens", "completion_tokens")}
     decided = totals["merged"] + totals["closed"]
     totals["acceptance"] = round(100 * totals["merged"] / decided) if decided else None
     recent = []
@@ -249,7 +282,8 @@ def render(platform: "Platform", days: int, project: str | None) -> str:
             "green" if PIPELINE_GREEN in kinds else "",
         ]))
         outcome = t.outcome or t.error or ""
-        recent.append({"task": t, "badges": badges,
+        tokens = (t.prompt_tokens or 0) + (t.completion_tokens or 0) if t.llm_calls is not None else None
+        recent.append({"task": t, "badges": badges, "tokens": tokens,
                        "link": outcome if outcome.startswith(("http://", "https://")) else "",
                        "text": outcome[:200],
                        "exportable": t.bundle_json is not None and (t.status == FAILED or r[THUMBS_DOWN] > 0

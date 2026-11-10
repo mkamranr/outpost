@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,6 +11,24 @@ from ..llm import LLMConfig
 from . import EngineRun
 
 AGENT_HOME = Path(os.environ.get("AGENT_HOME", "/opt/agent"))
+# Aider prints one of these per LLM call, e.g. "Tokens: 12k sent, 1.2k cache hit, 345 received. Cost: ..."
+_TOKENS = re.compile(r"^Tokens: ([\d.,]+[kKmM]?) sent,(?:.*?,)? ([\d.,]+[kKmM]?) received", re.MULTILINE)
+
+
+def _count(text: str) -> int:
+    text = text.replace(",", "")
+    scale = {"k": 1_000, "m": 1_000_000}.get(text[-1].lower(), 1)
+    return int(float(text.rstrip("kKmM")) * scale)
+
+
+def parse_usage(output: str) -> dict[str, int]:
+    """Token usage from Aider's output (its 'Tokens: ... sent, ... received' line after every LLM call)."""
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+    for sent, received in _TOKENS.findall(output):
+        usage["prompt_tokens"] += _count(sent)
+        usage["completion_tokens"] += _count(received)
+        usage["calls"] += 1
+    return usage
 
 
 class AiderEngine:
@@ -69,6 +88,6 @@ class AiderEngine:
                 errors="replace", timeout=max(timeout, 60), stdin=subprocess.DEVNULL,
             )
             out = proc.stdout + proc.stderr
-            return EngineRun(ok=proc.returncode == 0, log_tail=out[-6000:])
+            return EngineRun(ok=proc.returncode == 0, log_tail=out[-6000:], usage=parse_usage(proc.stdout))
         except subprocess.TimeoutExpired:
             return EngineRun(ok=False, log_tail=f"aider timed out after {timeout:.0f}s")
