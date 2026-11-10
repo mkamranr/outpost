@@ -10,3 +10,5 @@ protected_paths:
 agents: [pipeline-fixer, code-reviewer, mr-assist]   # opt out of the others
 # Security findings the security-remediator should skip live in a separate file:
 # .gitlab/agent-security-ignore.yml (see agent-security-ignore.yml next to this example).
+# Conventions and review rules for every agent go in .gitlab/agent-instructions.md (see agent-instructions.md).
+# Those two are read from the default branch only; all three files are always protected from agent edits.

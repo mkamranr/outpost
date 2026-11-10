@@ -12,7 +12,7 @@ then restart.
 | `pipeline-fixer` | edit / aider | `pipeline_fix` | `failed_jobs`, `ci_config`, `pipeline_diff` | failed pipeline; `fix-pipeline` |
 | `planner` | readonly / llm | `note` | `issue`, `issue_notes` | `plan`; `agent::plan` |
 | `code-writer` | edit / aider | `merge_request` | `issue`, `issue_notes` | `approve`, `implement`; `agent::implement` |
-| `code-reviewer` | readonly / llm | `review` | `mr`, `mr_diff` | `review`; `agent::review` |
+| `code-reviewer` | readonly / llm | `review` | `mr`, `mr_diff`, `review_memory` | `review`; `agent::review` |
 | `mr-assist` | edit / aider | `mr_commit` | `mr`, `discussion`, `mr_diff` | `fix`, `change`, `do` |
 | `security-analyst` | readonly / llm | `note` | `mr`, `mr_diff` | `security` |
 | `test-writer` | edit / aider | `mr_commit` | `mr`, `mr_diff` | `tests`, `test` |
@@ -36,6 +36,16 @@ protected paths or untrusted-data rules. It is cut off after ~2000 tokens, cache
 rechecked at most every minute. Like `.gitlab/agent.yml`, it is always protected. See
 [`deploy/repo-example/agent-instructions.md`](../deploy/repo-example/agent-instructions.md).
 
+What works well:
+* Things a reviewer or writer can't infer from the code: "never build SQL by hand; use `app/db/queries.py`",
+  "billing changes need a test per branch", "don't comment on naming".
+* Short, concrete rules. Anything past ~6000 characters is cut off, and the more there is, the less each rule
+  weighs.
+* Notes that apply to every agent. For one agent's behaviour, tune its prompt in `agents/` instead.
+
+A missing file, or one that can't be read, adds nothing. The prompt each task ran with, instructions included,
+is stored with the task in the orchestrator's database.
+
 ## Definition reference
 
 ```yaml
@@ -46,6 +56,7 @@ engine: llm                       # edit: aider | mini-swe     readonly: llm (to
                                   #   or inline (runs in the orchestrator, GitLab tools only; built-in agents only)
 output: review                    # pipeline_fix | merge_request | mr_commit | note | review | chat
                                   #   | mr_description | triage (inline only) | security_fix
+                                  #   | conflict_resolution
 context: [mr, mr_diff]            # collectors, see below
 tools: [get_merge_request, get_job_log]  # GitLab tools the agent may call while it runs, see below
 context_budget_tokens: 32000      # split across collectors; a 27B model does best on 20-40K focused tokens
@@ -137,6 +148,7 @@ from it). A collector that raises is recorded as `{"error": …}` and the agent 
 | `mr_description` | Writes the MR description inside `<!-- outpost:description -->` markers: replaces an earlier block, otherwise appends, so the author's text stays |
 | `triage` | One comment with suggested labels (existing, non-`agent::` labels only; applied when `triage.apply_labels`), verified duplicates and questions for the reporter |
 | `security_fix` | On an MR: like `mr_commit`. After a pipeline: new `agent/…-vuln-<id>` branch + Draft MR labelled `agent::security-fix`, listing the findings in scope |
+| `conflict_resolution` | New `agent/conflict-resolver-mr-<iid>-…` branch cut from the target head + replacement Draft MR "Replaces !iid" listing the resolved files; a comment on the original MR links it. The original branch is never touched |
 
 All changes pass `outputs/changes.py` before anything is committed. That check rejects:
 * path traversal and `.git/`
@@ -381,6 +393,7 @@ The dashboard (`/admin`) and `/metrics` show, per agent:
 * failures, median time and tool calls
 * LLM tokens (prompt / completion) and requests, in total and per task
   (`outpost_llm_tokens{agent,type}`, `outpost_llm_calls{agent}`)
+* inline review comments posted and dismissed (`outpost_review_comments{agent,state}`)
 
 Token usage comes from the `usage` field of every response from the OpenAI-compatible endpoint (the sandbox's own
 calls, inline agents) and from Aider's per-call `Tokens: … sent, … received` lines. For `mini-swe` it's best

@@ -44,6 +44,7 @@ any case fails.
 | `mr-describe-basic` | mr-describer | Description covers what changed, why (from the linked issue) and how to test |
 | `triage-duplicate` | issue-triage | Finds the duplicate issue and suggests the `bug` and `storage` labels |
 | `vuln-sql-injection` | security-remediator | Parameterises an SQL query; an injection test fails until it does |
+| `merge-conflict-basic` | conflict-resolver | Keeps both sides of a conflict (the MR's quantity, main's renamed field); no markers left, tests pass |
 
 ## Case format
 
